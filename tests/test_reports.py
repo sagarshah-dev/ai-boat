@@ -171,10 +171,11 @@ def test_search_falls_back_when_ai_is_down(bot):
 # ── daily job ──────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def jobs_client(tg, mailer):
-    from app.telegram.webhook import get_mailer, get_telegram
+def jobs_client(tg, mailer, llm):
+    from app.telegram.webhook import get_llm, get_mailer, get_telegram
     app.dependency_overrides[get_telegram] = lambda: tg
     app.dependency_overrides[get_mailer] = lambda: mailer
+    app.dependency_overrides[get_llm] = lambda: llm
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -235,9 +236,9 @@ def test_failed_email_falls_back_to_chat_and_says_so(jobs_client, bot, tg, maile
 def test_one_failing_task_does_not_stop_the_others(jobs_client, monkeypatch):
     use_settings(jobs_secret="job-secret-123")
 
-    def boom(settings, tg):
+    def boom(settings, tg, llm):
         raise RuntimeError("x")
-    monkeypatch.setattr(jobs, "DAILY_HOOKS", [("broken", boom), ("fine", lambda s, t: "ok")])
+    monkeypatch.setattr(jobs, "DAILY_HOOKS", [("broken", boom), ("fine", lambda s, t, m: "ok")])
     r = run_daily(jobs_client)
     assert r.json()["results"]["broken"] == "failed: RuntimeError"
     assert r.json()["results"]["fine"] == "ok"

@@ -28,6 +28,9 @@ os.environ.update({
     "ADMIN_TELEGRAM_ID": str(ADMIN_ID),
     "GEMINI_API_KEY": "test-key-not-real",
     "SETTLE_PIN": SETTLE_PIN,
+    # The fake embedder below is cruder than Gemini's, so its similarity scores are lower. The
+    # real threshold (0.62) is measured with the real model by the evals, not by these tests.
+    "RAG_MIN_SCORE": "0.3",
 })
 
 from alembic import command  # noqa: E402
@@ -52,11 +55,29 @@ def migrated_db():
     yield
 
 
+def _seed_plants():
+    """The plants list comes from migration 0002; TRUNCATE removes it, so put it back the same
+    way production gets it (read from the migration file, not a second copy in the tests)."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), "..", "migrations", "versions", "0002_farm_seed.py")
+    spec = importlib.util.spec_from_file_location("seed_0002", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.PLANTS
+
+
+PLANT_SEED = _seed_plants()
+
+
 @pytest.fixture(autouse=True)
 def clean_tables(migrated_db):
     names = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with get_engine().begin() as conn:
         conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        for name, aliases, count in PLANT_SEED:
+            conn.execute(text("INSERT INTO plants (plant, variety, aliases, count, count_date) "
+                              "VALUES (:p, '', :a, :c, DATE '2026-10-19')"),
+                         {"p": name, "a": aliases.split(","), "c": count})
     yield
 
 
@@ -73,6 +94,7 @@ class FakeTelegram:
         self.cleared: list[tuple] = []
         self.files: dict[str, bytes] = {}      # file_id -> bytes the "user" uploaded
         self.fail = False
+        self.calls: list[tuple] = []
 
     def send_message(self, chat_id, text, buttons=None):
         self.sent.append({"chat_id": chat_id, "text": text, "buttons": buttons})
@@ -104,6 +126,10 @@ class FakeTelegram:
     def answer_callback(self, callback_id, text=None):
         self.answers.append({"callback_id": callback_id, "text": text})
         return not self.fail
+
+    def call(self, method, payload=None):
+        self.calls.append((method, payload))
+        return None if self.fail else True
 
     def texts_to(self, chat_id) -> list[str]:
         return [m["text"] for m in self.sent if m["chat_id"] == chat_id]
@@ -162,12 +188,85 @@ class FakeChat:
         return self._next()
 
 
+# Fake embeddings (same as the old bot's test_farm.py): words in one synonym group share a
+# dimension, so "daag" and "fodla" are close the way a real model puts them close. Like the real
+# model, they do NOT know romanised "udhai" = termite: the stored English translation is what
+# connects the two, and the tests check exactly that.
+GROUPS = [
+    {"fungus", "fodla", "daag", "dag", "spots", "spot", "fungal", "phug", "fug", "ફૂગ", "ડાઘ", "pila", "yellow"},
+    {"mango", "aamba", "aam", "keri", "alphonso", "kesar", "hafus", "amba"},
+    {"neem"}, {"copper", "oxychloride"}, {"humic"},
+    {"paani", "water", "watering", "irrigation", "piyat"},
+    {"udhai"}, {"termite", "termites", "दीमक", "ઉધઈ"}, {"chiku", "sapota"}, {"guava", "jamfal"},
+    {"lemon", "limbu"}, {"tractor", "service"}, {"spray", "sprayed", "chhantkav"},
+    {"navā", "nava", "new", "young", "chhod", "plants"},
+]
+
+
+def fake_embed(text: str) -> list[float]:
+    import re as _re
+    from app.core.text import strip_marks, words
+    from app.integrations.gemini import EMBED_DIM, normalise
+    groups = [{strip_marks(x).lower() for x in g} for g in GROUPS]
+    v = [0.0] * EMBED_DIM
+    for t in words(text) + _re.findall(r"\d+(?::\d+)+", text):
+        g = next((i for i, grp in enumerate(groups) if t in grp), None)
+        idx = g if g is not None else 40 + (sum(map(ord, t)) * 7) % (EMBED_DIM - 40)
+        v[idx] += 3.0 if g is not None else 1.0
+    v[EMBED_DIM - 1] += 0.5      # shared baseline: unrelated texts are not exactly 0, as in reality
+    return normalise(v)
+
+
+# Word-by-word "translation" for the farm tests. Real translation is checked by the evals.
+TRANSLATE = {"udhai": "termite", "fodla": "blisters", "daag": "spots", "limdo": "neem",
+             "limda": "neem", "paani": "water", "aamba": "mango", "pan": "leaves", "par": "on",
+             "ma": "in", "aaje": "today", "aavi": "came", "karyu": "done", "dava": "pesticide",
+             "naakhi": "applied", "jevu": "like"}
+
+
+def fake_translate(text: str) -> str:
+    import re as _re
+    return " ".join(TRANSLATE.get(w.lower(), w) for w in _re.findall(r"[\w:.]+", text))
+
+
 class FakeLLM:
-    """Queue the model's turns with .script(...); every chat pops from the same queue in order."""
+    """Queue the model's turns with .script(...); every chat pops from the same queue in order.
+
+    complete() (one-shot answers: RAG, general advice) pops from the same queue and returns the
+    turn's text. Translations are not scripted per test (fake_translate), so a test about a farm
+    note never has to know that the note also gets translated in the background."""
+
+    embed_model = "fake-embedding"
 
     def __init__(self):
         self.turns: list = []
         self.chats: list[FakeChat] = []
+        self.completions: list[tuple[str, str]] = []
+        self.translated: list[str] = []
+        self.embedded: list[str] = []
+        self.embed_error: Exception | None = None
+        self.translate_error: Exception | None = None
+
+    def complete(self, system, prompt, *, json_schema=None, temperature=0.1, budget_s=30):
+        from app.services.rag_index import TRANSLATE_RULES
+        self.completions.append((system, prompt))
+        if system == TRANSLATE_RULES:
+            if self.translate_error:
+                raise self.translate_error
+            self.translated.append(prompt)
+            return fake_translate(prompt)
+        if not self.turns:
+            raise AssertionError("the bot asked the model more often than the test scripted")
+        item = self.turns.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item.text
+
+    def embed(self, texts, task="RETRIEVAL_DOCUMENT"):
+        if self.embed_error:
+            raise self.embed_error
+        self.embedded.extend(texts)
+        return [fake_embed(t) for t in texts]
 
     def script(self, *turns):
         self.turns.extend(turns)

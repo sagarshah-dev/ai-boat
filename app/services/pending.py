@@ -17,6 +17,11 @@ AMOUNT = "amount"
 TIME = "time"              # a meeting waiting for its time (or am/pm, or a free slot)
 SETTLE_PIN = "settle_pin"
 CONFIRM = "confirm"        # a previewed change waiting for yes / no
+PLANT = "plant"            # a farm note waiting for which plant it is about
+GENERAL = "general"        # a farm search found nothing; the 💡 General advice button is live
+FARM_PHOTO = "farm_photo"  # a farm photo without a caption, waiting for its one line
+FARM_MODE = "farm_mode"    # 🌱 tapped in the menu: the next photo is a farm note
+ADVICE_MODE = "advice_mode"  # 📚 tapped in the menu: the next text / voice note is advice
 
 TTL = timedelta(minutes=2)
 

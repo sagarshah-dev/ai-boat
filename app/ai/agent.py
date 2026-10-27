@@ -21,13 +21,13 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import guards, meeting_tools, proposals, tools
+from app.ai import farm_tools, guards, meeting_tools, proposals, tools
 from app.config import Settings
 from app.core.formatting import fmt_date, inr, parse_date, to_rupees
-from app.core.replies import Buttons
+from app.core.replies import Buttons, Out
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError, ToolCall
-from app.services import balance, expenses, members, pending
+from app.services import balance, expenses, farm, members, pending
 from app.services.expenses import ExpenseView
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,10 @@ class Context:
     confirm_writes: bool = False
     settings: Settings | None = None
     now: datetime | None = None        # the owners' local time; tests pin it
+    # Farm notes: a photo sent with the note (Telegram file_id), and where the words came from.
+    photo: str = ""
+    source: str = "text"
+    details_asked: bool = False        # the one "dose / time?" question was already asked
 
     def __post_init__(self):
         if not self.people:
@@ -84,7 +88,7 @@ class ToolRun:
     def needs(self) -> str | None:
         """Which missing piece the CODE asks the user for (not the model): amount, description,
         time, ampm, new_time (slot taken), datetime (both day and time missing)."""
-        for key in ("amount", "description", "time", "ampm", "new_time", "datetime"):
+        for key in ("amount", "description", "time", "ampm", "new_time", "datetime", "plant"):
             if self.result.get(f"needs_{key}"):
                 return key
         return None
@@ -97,6 +101,7 @@ class Outcome:
     runs: list[ToolRun] = field(default_factory=list)
     buttons: Buttons | None = None
     llm_error: str | None = None   # set when the model could not answer (kind: quota, timeout...)
+    extras: list[Out] = field(default_factory=list)   # photos of the farm notes an answer cites
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────────────
@@ -107,8 +112,8 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     user_text = text.strip()
     waiting = None
     if not batch:
-        waiting = (pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT)
-                   or pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.TIME))
+        waiting = next((w for kind in (pending.AMOUNT, pending.TIME, pending.PLANT)
+                        if (w := pending.get(ctx.session, ctx.chat_id, ctx.sender.id, kind))), None)
 
     if not batch and not waiting and (guards.YES.match(user_text) or guards.NO.match(user_text)):
         # Never sent to the model: a bare "yes" with nothing to confirm has no safe meaning.
@@ -118,24 +123,33 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     # "tea by sagar" (waiting) + "100" -> "tea by sagar 100", then the normal path: every gate
     # applies to the glued text exactly as if it had been typed in one go.
     message = _glue(waiting, user_text) if is_slot else user_text
+    if is_slot and waiting.kind == pending.PLANT:
+        # The note's photo and source travel with the question "which plant?".
+        ctx.photo = ctx.photo or waiting.payload.get("photo", "")
+        ctx.source = waiting.payload.get("source", ctx.source)
 
     runs, reply, llm_error = _run_model(ctx, message)
+    extras = [o for r in runs if r.ok for o in r.result.get("outs", [])]
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
              and "expense" in r.result]
     if batch:
-        return Outcome(reply, added, runs, llm_error=llm_error)
+        return Outcome(reply, added, runs, llm_error=llm_error, extras=extras)
 
     proposal = _merge_proposals([r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
     if proposal:
         proposals.store(ctx.session, ctx.chat_id, ctx.sender, proposal)
         # The preview must be shown word for word: the user is about to say "yes" to exactly it.
         reply = "\n\n".join(p for p in (reply, proposals.preview(proposal)) if p)
-        return Outcome(reply, added, runs, proposals.buttons(proposal))
-    reply = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
-    return Outcome(reply, added, runs, llm_error=llm_error)
+        return Outcome(reply, added, runs, proposals.buttons(proposal), extras=extras)
+    reply, buttons = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
+    if buttons is None:
+        buttons = next((r.result["buttons"] for r in runs if r.ok and r.result.get("buttons")), None)
+    return Outcome(reply, added, runs, buttons, llm_error=llm_error, extras=extras)
 
 
 def _is_slot_reply(ctx: Context, waiting: pending.Pending, text: str) -> bool:
+    if waiting.kind == pending.PLANT:
+        return farm_tools.is_plant_reply(farm.plants(ctx.session), text)
     if waiting.kind == pending.AMOUNT:
         return bool(guards.amount_only_pattern(ctx.people_words).match(text))
     if waiting.payload.get("mode") == "ampm" and guards.DAYPART_ONLY.match(text):
@@ -197,6 +211,7 @@ def system_prompt(ctx: Context) -> str:
         "If the date or the time is missing, leave it empty — the system asks. Always call "
         "find_meetings before cancel_meeting or reschedule_meeting; if more than one meeting could "
         "match, ask which one. "
+        + farm_tools.SYSTEM_RULES +
         "BALANCE: if you used get_balances with other tools, never rewrite its numbers. "
         "If a tool returns an error, explain it simply and ask the user what is needed."
     )
@@ -256,7 +271,8 @@ NEEDS_MODEL = set(meeting_tools.NEEDS_MODEL)
 
 
 def all_tools(ctx: Context):
-    return tools.expense_tools([m.name for m in ctx.people]) + meeting_tools.specs()
+    return (tools.expense_tools([m.name for m in ctx.people]) + meeting_tools.specs()
+            + farm_tools.specs())
 
 
 def _unresolved_errors(runs: list[ToolRun]) -> list[ToolRun]:
@@ -270,7 +286,7 @@ def _unresolved_errors(runs: list[ToolRun]) -> list[ToolRun]:
 
 def _for_model(result: dict) -> dict:
     """What the model gets back: the facts, not our Python objects."""
-    return {k: v for k, v in result.items() if k not in ("expense", "text_reply")}
+    return {k: v for k, v in result.items() if k not in ("expense", "text_reply", "outs", "buttons")}
 
 
 # ── Tools ───────────────────────────────────────────────────────────────────────────────────
@@ -278,6 +294,8 @@ def _for_model(result: dict) -> dict:
 def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) -> dict:
     if name in meeting_tools.NAMES:
         return meeting_tools.execute(ctx, name, args, message)
+    if name in farm_tools.NAMES:
+        return farm_tools.execute(ctx, name, args, message)
     if name == tools.ADD_EXPENSE:
         return _add_expense(ctx, args, message)
     if name == tools.GET_BALANCES:
@@ -414,7 +432,25 @@ def _ask_amount(original: str) -> str:
 
 
 def _follow_up(ctx: Context, waiting: pending.Pending | None, is_slot: bool, user_text: str,
-               runs: list[ToolRun], reply: str) -> str:
+               runs: list[ToolRun], reply: str) -> tuple[str, Buttons | None]:
+    """The final reply and its buttons. A farm note with no plant is remembered, so a tapped
+    plant button (or a typed "aamba") completes it."""
+    s, chat, who = ctx.session, ctx.chat_id, ctx.sender.id
+    if any(r.needs == "plant" for r in runs) and not is_slot:
+        pending.drop(s, chat, who, pending.AMOUNT)
+        pending.drop(s, chat, who, pending.TIME)
+        pending.put(s, chat, who, pending.PLANT, {"message": user_text, "tries_left": MAX_TRIES,
+                                                  "photo": ctx.photo, "source": ctx.source})
+        return ("\n\n".join(p for p in (reply, farm_tools.ASK_PLANT) if p),
+                farm_tools.plant_buttons(farm.plants(s)))
+    text = _follow_up_text(ctx, waiting, is_slot, user_text, runs, reply)
+    if waiting and waiting.kind == pending.PLANT and pending.get(s, chat, who, pending.PLANT):
+        return text, farm_tools.plant_buttons(farm.plants(s))
+    return text, None
+
+
+def _follow_up_text(ctx: Context, waiting: pending.Pending | None, is_slot: bool, user_text: str,
+                    runs: list[ToolRun], reply: str) -> str:
     """Decides, in code, what happens to a waiting question after this message, and the final
     reply. Rules (same as the old bot): a saved expense clears it; a new request missing a piece
     replaces it; a reply that still does not complete it uses up one of three tries."""
@@ -465,19 +501,22 @@ def _follow_up(ctx: Context, waiting: pending.Pending | None, is_slot: bool, use
     if not waiting:
         return reply
 
-    noun = "time" if waiting.kind == pending.TIME else "amount"
+    noun = {pending.TIME: "time", pending.PLANT: "plant"}.get(waiting.kind, "amount")
     original = waiting.payload["message"]
     tries_left = int(waiting.payload.get("tries_left", MAX_TRIES)) - 1
     if tries_left <= 0:
         pending.drop(s, chat, who, waiting.kind)
-        example = "meeting sunday 5pm" if noun == "time" else f"50 tea by {ctx.sender.name.split()[0]}"
+        example, what = {
+            "time": ("meeting sunday 5pm", "request"),
+            "plant": ("aamba ma pan par fodla, neem spray", "note"),
+        }.get(noun, (f"50 tea by {ctx.sender.name.split()[0]}", "entry"))
         note = (f"❌ No valid {noun} after {MAX_TRIES} tries, so \"{original}\" was not saved. "
-                f"Send the full {'request' if noun == 'time' else 'entry'} again, e.g. {example}.")
+                f"Send the full {what} again, e.g. {example}.")
         return note if is_slot else joined(reply, note)
 
     pending.put(s, chat, who, waiting.kind, {**waiting.payload, "tries_left": tries_left})
     left = f"{tries_left} {'try' if tries_left == 1 else 'tries'} left"
-    example = "5pm" if noun == "time" else "100"
+    example = {"time": "5pm", "plant": "aamba"}.get(noun, "100")
     if is_slot:
         return (f"❌ \"{user_text}\" is not a valid {noun} for \"{original}\".\n"
                 f"Send just the {noun}, e.g. {example} ({left}).")

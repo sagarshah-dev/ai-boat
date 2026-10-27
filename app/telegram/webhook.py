@@ -285,7 +285,8 @@ def _on_button(session: Session, query: dict[str, Any], settings: Settings, llm:
     if len(outs) == 1 and isinstance(outs[0], Reply) and outs[0].text == commands.NOTHING_WAITING:
         return [AnswerButton(callback_id, "Nothing is waiting for you here.")]
     actions: list[Action] = [AnswerButton(callback_id)]
-    if msg.get("message_id"):
+    # The /menu stays usable after a tap; every other button is spent once it worked.
+    if msg.get("message_id") and not data.startswith("menu:"):
         actions.append(ClearButtons(chat_id, msg["message_id"]))
     return actions + to_actions(chat_id, outs)
 

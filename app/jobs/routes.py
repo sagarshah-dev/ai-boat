@@ -19,17 +19,23 @@ from app.core.formatting import inr
 from app.db.models import PendingAction, ProcessedUpdate
 from app.db.session import session_scope
 from app.integrations.email import Mailer
+from app.integrations.gemini import LLM
+from app.jobs import farm_jobs
 from app.services import balance, mail, reports
 from app.telegram.client import TelegramClient
-from app.telegram.webhook import get_mailer, get_telegram
+from app.telegram.webhook import get_llm, get_mailer, get_telegram
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs")
 
 KEEP_UPDATES = timedelta(days=7)
 
-# Extra daily tasks registered by other features (farm follow-ups). Each gets (settings, tg).
-DAILY_HOOKS: list[tuple[str, Callable[[Settings, TelegramClient], str]]] = []
+# Daily tasks of other features. Each gets (settings, tg, llm) and returns a one-line result.
+DAILY_HOOKS: list[tuple[str, Callable[[Settings, TelegramClient, LLM], str]]] = [
+    ("farm_follow_ups", farm_jobs.follow_ups),
+    ("search_sync", farm_jobs.search_sync),
+    ("bot_commands", farm_jobs.bot_commands),
+]
 
 
 def _check(secret: str | None, settings: Settings) -> None:
@@ -50,6 +56,7 @@ def daily(
     settings: Settings = Depends(get_settings),
     tg: TelegramClient = Depends(get_telegram),
     mailer: Mailer = Depends(get_mailer),
+    llm: LLM = Depends(get_llm),
 ) -> dict:
     _check(secret, settings)
     today = datetime.now(ZoneInfo(settings.timezone)).date()
@@ -61,7 +68,7 @@ def daily(
         results["monthly"] = _run("monthly", lambda: send_report(
             settings, tg, mailer, today, "last month", "Monthly Report", with_balance=True))
     for name, hook in DAILY_HOOKS:
-        results[name] = _run(name, lambda h=hook: h(settings, tg))
+        results[name] = _run(name, lambda h=hook: h(settings, tg, llm))
     log.info("daily job done", extra={"fields": results})
     return {"ok": True, "date": today.isoformat(), "results": results}
 

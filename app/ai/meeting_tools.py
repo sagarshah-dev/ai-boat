@@ -182,6 +182,16 @@ def execute(ctx: "Context", name: str, args: dict, message: str) -> dict:
 
 # ── Previews and apply ──────────────────────────────────────────────────────────────────────
 
+def upcoming_text(ctx: "Context") -> str:
+    """For the 📅 menu button: a fixed listing, no model call."""
+    found = svc.listing(ctx.session, "upcoming", _now(ctx), None, _tz(ctx))
+    if not found:
+        return "📅 No upcoming meetings."
+    return "📅 Upcoming meetings:\n" + "\n".join(
+        f"#{m.id} — {svc.pretty_when(_local(ctx, m.starts_at), m.duration_min)} — {m.title}"
+        for m in found[:10])
+
+
 def _start(p: dict) -> datetime:
     return datetime.fromisoformat(p["start"])
 

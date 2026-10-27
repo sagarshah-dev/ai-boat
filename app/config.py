@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # Key of the service account the calendar is shared with (the JSON text itself).
     google_service_account_json: str = ""
 
+    # Farm search: how close in meaning a note must be to count as found. Tuned by the eval run
+    # with the real embedding model (old bot: 0.62), never by feel.
+    rag_min_score: float = 0.62
+    # A voice note at least this long is treated as the farmer's advice, not a quick note.
+    knowledge_min_seconds: int = 60
+
     @property
     def recipients(self) -> tuple[str, ...]:
         return tuple(e.strip() for e in self.recipient_emails.split(",") if e.strip())

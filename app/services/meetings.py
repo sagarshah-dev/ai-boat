@@ -10,7 +10,6 @@ vagye" is the normal way to say it and has no date in it. So the checks are diff
 Ported from the old bot (main.py meeting gates, sheets.py Meetings tab).
 """
 import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -18,6 +17,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.text import strip_marks, words
 from app.db.models import Meeting, Member
 
 DEFAULT_DURATION = 60
@@ -36,17 +36,6 @@ _WEEKDAY_NAMES = {
     5: ["saturday", "sat", "shanivar", "shaniwar", "shani", "શનિવાર", "शनिवार"],
     6: ["sunday", "sun", "ravivar", "raviwar", "ravi", "itvar", "itwar", "રવિવાર", "रविवार"],
 }
-
-
-def strip_marks(s: str) -> str:
-    """'સોમવારે' -> base letters only. Python's \\w does not include Gujarati vowel signs, so
-    without this the word splits into pieces and no lookup ever matches."""
-    return "".join(ch for ch in unicodedata.normalize("NFD", str(s))
-                   if unicodedata.category(ch) not in ("Mn", "Mc", "Me"))
-
-
-def words(text: str) -> list[str]:
-    return [w.lower() for w in re.findall(r"[^\W\d_]+", strip_marks(text)) if w]
 
 
 _WEEKDAYS = {strip_marks(n).lower(): d for d, names in _WEEKDAY_NAMES.items() for n in names}
