@@ -15,6 +15,7 @@ from app.db.models import PendingAction
 
 AMOUNT = "amount"
 SETTLE_PIN = "settle_pin"
+CONFIRM = "confirm"        # a previewed change waiting for yes / no
 
 TTL = timedelta(minutes=2)
 
@@ -62,10 +63,10 @@ def pop(session: Session, chat_id: int, member_id: int,
 
 
 def put(session: Session, chat_id: int, member_id: int, kind: str, payload: dict,
-        attempts: int = 0) -> None:
-    """Create or replace — each new question restarts the 2-minute window."""
+        attempts: int = 0, ttl: timedelta = TTL) -> None:
+    """Create or replace — each new question restarts its window."""
     values = {"chat_id": chat_id, "member_id": member_id, "kind": kind, "payload": payload,
-              "attempts": attempts, "expires_at": _now() + TTL}
+              "attempts": attempts, "expires_at": _now() + ttl}
     stmt = pg_insert(PendingAction).values(**values).on_conflict_do_update(
         constraint="uq_pending_actions_chat_member_kind",
         set_={k: values[k] for k in ("payload", "attempts", "expires_at")})

@@ -9,18 +9,21 @@ from typing import Any
 
 import httpx
 
-log = logging.getLogger(__name__)
+from app.core.replies import Buttons
 
-Buttons = list[list[tuple[str, str]]]  # rows of (label, callback_data)
+log = logging.getLogger(__name__)
 
 _RETRIES = 3
 _BACKOFF_S = (0.5, 1.5)
 _CALLBACK_DATA_MAX_BYTES = 64  # Telegram rejects the whole message above this
+MAX_TEXT = 4096                # Telegram's limit for one message
+MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024   # the Bot API serves files up to 20 MB
 
 
 class TelegramClient:
     def __init__(self, token: str, timeout_s: float = 10.0, http: httpx.Client | None = None):
         self._base = f"https://api.telegram.org/bot{token}"
+        self._file_base = f"https://api.telegram.org/file/bot{token}"
         self._http = http or httpx.Client(timeout=timeout_s)
 
     def call(self, method: str, payload: dict[str, Any] | None = None,
@@ -50,6 +53,9 @@ class TelegramClient:
         return None
 
     def send_message(self, chat_id: int, text: str, buttons: Buttons | None = None) -> bool:
+        if len(text) > MAX_TEXT:
+            # Over the limit Telegram rejects the whole message; a cut message beats no message.
+            text = text[:MAX_TEXT - 40] + "\n…(message cut — too long)"
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text,
                                    "disable_web_page_preview": True}
         if buttons:
@@ -64,6 +70,51 @@ class TelegramClient:
                             json={"chat_id": chat_id, "action": "typing"}, timeout=3.0)
         except httpx.HTTPError:
             pass
+
+    def send_photo(self, chat_id: int, file_id: str, caption: str = "") -> bool:
+        """Re-sends a photo Telegram already stores (by file_id) — nothing is uploaded."""
+        return self.call("sendPhoto", {"chat_id": chat_id, "photo": file_id,
+                                       "caption": caption[:1024]}) is not None
+
+    def send_document(self, chat_id: int, filename: str, data: bytes, caption: str = "") -> bool:
+        for attempt in range(_RETRIES):
+            try:
+                resp = self._http.post(f"{self._base}/sendDocument",
+                                       data={"chat_id": str(chat_id), "caption": caption[:1024]},
+                                       files={"document": (filename, data)}, timeout=60.0)
+                if resp.json().get("ok"):
+                    return True
+                log.warning("telegram sendDocument failed", extra={"fields": {
+                    "status": resp.status_code, "attempt": attempt + 1}})
+                if resp.status_code < 500 and resp.status_code != 429:
+                    return False
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("telegram sendDocument error", extra={"fields": {
+                    "error": type(exc).__name__, "attempt": attempt + 1}})
+            if attempt < _RETRIES - 1:
+                time.sleep(_BACKOFF_S[attempt])
+        return False
+
+    def get_file_bytes(self, file_id: str) -> bytes | None:
+        """Downloads a photo or voice note the user sent. None if Telegram can't give it to us."""
+        info = self.call("getFile", {"file_id": file_id})
+        path = (info or {}).get("file_path")
+        if not path:
+            return None
+        if (info or {}).get("file_size", 0) > MAX_DOWNLOAD_BYTES:
+            return None
+        try:
+            resp = self._http.get(f"{self._file_base}/{path}", timeout=60.0)
+            return resp.content if resp.status_code == 200 else None
+        except httpx.HTTPError as exc:
+            log.warning("telegram file download failed", extra={"fields": {"error": type(exc).__name__}})
+            return None
+
+    def clear_buttons(self, chat_id: int, message_id: int) -> bool:
+        """Removes the buttons under a message, so an answered question can't be answered twice."""
+        return self.call("editMessageReplyMarkup", {
+            "chat_id": chat_id, "message_id": message_id,
+            "reply_markup": {"inline_keyboard": []}}) is not None
 
     def edit_message_text(self, chat_id: int, message_id: int, text: str) -> bool:
         """Replaces a message's text and removes its buttons, so nobody can press them twice."""

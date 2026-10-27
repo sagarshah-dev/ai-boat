@@ -21,8 +21,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import guards, tools
+from app.ai import guards, proposals, tools
 from app.core.formatting import fmt_date, inr, parse_date, to_rupees
+from app.core.replies import Buttons
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError, ToolCall
 from app.services import balance, expenses, members, pending
@@ -57,6 +58,8 @@ class Context:
     today: date
     llm: LLM
     people: list[Member] = field(default_factory=list)   # who shares expenses
+    # Voice notes: every write is PROPOSED and saved only after "yes" (a transcript can be misheard).
+    confirm_writes: bool = False
 
     def __post_init__(self):
         if not self.people:
@@ -89,6 +92,7 @@ class Outcome:
     reply: str
     added: list[ExpenseView] = field(default_factory=list)
     runs: list[ToolRun] = field(default_factory=list)
+    buttons: Buttons | None = None
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────────────
@@ -111,11 +115,30 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     message = f"{waiting.payload['message']} {user_text}" if is_slot else user_text
 
     runs, reply = _run_model(ctx, message)
-    added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok]
+    added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
+             and "expense" in r.result]
     if batch:
         return Outcome(reply, added, runs)
+
+    proposal = _merge_proposals([r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
+    if proposal:
+        proposals.store(ctx.session, ctx.chat_id, ctx.sender, proposal)
+        # The preview must be shown word for word: the user is about to say "yes" to exactly it.
+        reply = "\n\n".join(p for p in (reply, proposals.preview(proposal)) if p)
+        return Outcome(reply, added, runs, proposals.buttons(proposal))
     reply = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
     return Outcome(reply, added, runs)
+
+
+def _merge_proposals(found: list[dict]) -> dict | None:
+    """One "yes" confirms one thing. Several expenses heard in one voice note become one list;
+    otherwise the first proposal is kept and the rest are left for the user to send again."""
+    if not found:
+        return None
+    items = [it for p in found if p["kind"] == "expenses" for it in p["items"]]
+    if items and all(p["kind"] == "expenses" for p in found):
+        return proposals.expenses_proposal(items, found[0].get("source", "voice"))
+    return found[0]
 
 
 # ── The model loop ──────────────────────────────────────────────────────────────────────────
@@ -171,7 +194,9 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str]:
         return runs, _templates(runs) or "Sorry, I couldn't complete that. Please try again."
     except LlmError as err:
         log.warning("llm failed", extra={"fields": {"kind": err.kind}})
-        wrote = [r for r in runs if r.name in tools.WRITE_TOOLS and r.ok]
+        wrote = [r for r in runs if r.ok and (r.result.get("expense") or r.result.get("deleted"))]
+        if any(r.ok and r.result.get("proposal") for r in runs):
+            return runs, _templates(runs)   # the preview is added by the caller; nothing was saved
         if wrote:
             # The save happened; the model only failed to word the reply. Say exactly what was saved.
             return runs, _templates(wrote) + "\n(The change above is saved.)"
@@ -226,6 +251,12 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
     if name == tools.SEARCH_EXPENSES:
         return _search(ctx, args)
     if name == tools.DELETE_LAST_EXPENSE:
+        if ctx.confirm_writes:
+            target = expenses.newest_own_open(ctx.session, ctx.sender)
+            if target is None:
+                return {"text_reply": f"No recent unsettled entry by {ctx.sender.name} to undo.",
+                        "deleted": None}
+            return {"proposal": proposals.undo_proposal(target)}
         undone = expenses.undo_last(ctx.session, ctx.sender)
         if undone is None:
             return {"text_reply": f"No recent unsettled entry by {ctx.sender.name} to undo.",
@@ -265,10 +296,15 @@ def _add_expense(ctx: Context, args: dict, message: str) -> dict:
         names = ", ".join(m.name for m in ctx.people)
         return {"error": f"Unknown payer. Nothing was saved. Ask the user who paid: {names}."}
 
+    category = str(args.get("category") or "")
+    merchant = str(args.get("merchant") or "")
+    if ctx.confirm_writes:
+        return {"proposal": proposals.expenses_proposal([proposals.expense_item(
+            amount=amount, description=description, paid_by=payer, category=category,
+            merchant=merchant, on=expense_date)], "voice"), "amount": amount, "paid_by": payer.name}
     view = expenses.add(ctx.session, amount=amount, description=description, paid_by=payer,
                         entered_by=ctx.sender, expense_date=expense_date,
-                        category=str(args.get("category") or ""),
-                        merchant=str(args.get("merchant") or ""))
+                        category=category, merchant=merchant)
     return {"expense": view, "text_reply": added_text(view), "id": view.id, "amount": view.amount,
             "paid_by": view.paid_by, "date": fmt_date(view.date)}
 

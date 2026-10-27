@@ -68,6 +68,10 @@ class FakeTelegram:
         self.edits: list[dict] = []
         self.answers: list[dict] = []
         self.typing: list[int] = []
+        self.photos: list[dict] = []
+        self.documents: list[dict] = []
+        self.cleared: list[tuple] = []
+        self.files: dict[str, bytes] = {}      # file_id -> bytes the "user" uploaded
         self.fail = False
 
     def send_message(self, chat_id, text, buttons=None):
@@ -76,6 +80,22 @@ class FakeTelegram:
 
     def send_typing(self, chat_id):
         self.typing.append(chat_id)
+
+    def send_photo(self, chat_id, file_id, caption=""):
+        self.photos.append({"chat_id": chat_id, "file_id": file_id, "caption": caption})
+        return not self.fail
+
+    def send_document(self, chat_id, filename, data, caption=""):
+        self.documents.append({"chat_id": chat_id, "filename": filename, "data": data,
+                               "caption": caption})
+        return not self.fail
+
+    def clear_buttons(self, chat_id, message_id):
+        self.cleared.append((chat_id, message_id))
+        return not self.fail
+
+    def get_file_bytes(self, file_id):
+        return self.files.get(file_id)
 
     def edit_message_text(self, chat_id, message_id, text):
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text})
@@ -119,6 +139,7 @@ class FakeChat:
         self.llm, self.system, self.tools = llm, system, tools
         self.user_messages: list[str] = []
         self.tool_results: list[list] = []
+        self.media: list[tuple] = []
 
     def _next(self):
         if not self.llm.turns:
@@ -134,6 +155,10 @@ class FakeChat:
 
     def send_tool_results(self, results):
         self.tool_results.append(results)
+        return self._next()
+
+    def send_media(self, text, data, mime_type):
+        self.media.append((text, data, mime_type))
         return self._next()
 
 
@@ -156,6 +181,25 @@ class FakeLLM:
     @property
     def last(self) -> FakeChat:
         return self.chats[-1]
+
+
+class FakeMailer:
+    def __init__(self):
+        self.sent = []
+        self.ok = True
+
+    @property
+    def configured(self):
+        return True
+
+    def send(self, email):
+        self.sent.append(email)
+        return self.ok
+
+
+@pytest.fixture
+def mailer():
+    return FakeMailer()
 
 
 @pytest.fixture

@@ -111,5 +111,31 @@ def undo_last(session: Session, member: Member) -> ExpenseView | None:
     return _view(*row)
 
 
+def find_own_open(session: Session, member: Member, expense_id: int) -> ExpenseView | None:
+    """This member's entry, still unsettled and not undone — the only kind undo may touch."""
+    row = session.execute(_query().where(
+        Expense.id == expense_id, Expense.entered_by == member.id,
+        Expense.settlement_id.is_(None)).with_for_update(of=Expense)).first()
+    return _view(*row) if row else None
+
+
+def newest_own_open(session: Session, member: Member) -> ExpenseView | None:
+    row = session.execute(_query().where(
+        Expense.entered_by == member.id, Expense.settlement_id.is_(None))
+        .order_by(Expense.id.desc()).limit(1)).first()
+    return _view(*row) if row else None
+
+
+def undo_by_id(session: Session, member: Member, expense_id: int) -> ExpenseView | None:
+    """Undo of one specific entry, after a confirmed preview. Re-checked here: between the preview
+    and the "yes" the entry may have been settled or undone already."""
+    view = find_own_open(session, member, expense_id)
+    if view is None:
+        return None
+    session.get(Expense, expense_id).deleted_at = datetime.now(timezone.utc)
+    session.flush()
+    return view
+
+
 def total(views: list[ExpenseView]) -> Decimal:
     return sum((v.amount for v in views), Decimal("0"))

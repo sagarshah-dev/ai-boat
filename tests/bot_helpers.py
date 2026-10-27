@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.db.models import Expense, Member
 from app.db.session import session_scope
 from app.main import app
-from app.telegram.webhook import get_llm, get_telegram
+from app.telegram.webhook import get_llm, get_mailer, get_telegram
 from tests.conftest import ADMIN_ID
 
 SECRET = "test-secret-0123456789"
@@ -20,24 +20,54 @@ _ids = itertools.count(10_000)
 
 
 class Bot:
-    def __init__(self, client, tg, llm):
-        self.client, self.tg, self.llm = client, tg, llm
+    def __init__(self, client, tg, llm, mailer=None):
+        self.client, self.tg, self.llm, self.mailer = client, tg, llm, mailer
 
-    def send(self, user_id: int, text: str, chat_id: int | None = None) -> str:
-        """Sends one message and returns everything the bot replied to that chat, joined."""
-        chat = chat_id or user_id
+    def post(self, update: dict, chat: int) -> str:
         before = len(self.tg.sent)
-        update = {"update_id": next(_ids), "message": {
-            "message_id": next(_ids), "from": {"id": user_id, "first_name": "x"},
-            "chat": {"id": chat}, "text": text}}
         r = self.client.post("/telegram/webhook", json=update,
                              headers={"X-Telegram-Bot-Api-Secret-Token": SECRET})
         assert r.status_code == 200
         return "\n".join(m["text"] for m in self.tg.sent[before:] if m["chat_id"] == chat)
 
+    def send(self, user_id: int, text: str, chat_id: int | None = None) -> str:
+        """Sends one message and returns everything the bot replied to that chat, joined."""
+        chat = chat_id or user_id
+        return self.post({"update_id": next(_ids), "message": {
+            "message_id": next(_ids), "from": {"id": user_id, "first_name": "x"},
+            "chat": {"id": chat}, "text": text}}, chat)
+
+    def photo(self, user_id: int, data: bytes = b"jpeg-bytes", caption: str = "",
+              chat_id: int | None = None) -> str:
+        chat = chat_id or user_id
+        fid = f"photo{next(_ids)}"
+        self.tg.files[fid] = data
+        message = {"message_id": next(_ids), "from": {"id": user_id}, "chat": {"id": chat},
+                   "photo": [{"file_id": "small"}, {"file_id": fid}]}
+        if caption:
+            message["caption"] = caption
+        return self.post({"update_id": next(_ids), "message": message}, chat)
+
+    def voice(self, user_id: int, data: bytes = b"ogg-bytes", caption: str = "",
+              duration: int = 5, chat_id: int | None = None) -> str:
+        chat = chat_id or user_id
+        fid = f"voice{next(_ids)}"
+        self.tg.files[fid] = data
+        message = {"message_id": next(_ids), "from": {"id": user_id}, "chat": {"id": chat},
+                   "voice": {"file_id": fid, "mime_type": "audio/ogg", "duration": duration}}
+        if caption:
+            message["caption"] = caption
+        return self.post({"update_id": next(_ids), "message": message}, chat)
+
+    def tap(self, user_id: int, data: str, chat_id: int | None = None, message_id: int = 777) -> str:
+        chat = chat_id or user_id
+        return self.post({"update_id": next(_ids), "callback_query": {
+            "id": f"cb{next(_ids)}", "from": {"id": user_id}, "data": data,
+            "message": {"message_id": message_id, "chat": {"id": chat}}}}, chat)
+
 
 @pytest.fixture
-def bot(tg, llm):
+def bot(tg, llm, mailer):
     """Sagar (admin), Biren and Lalo (owners) share expenses; Ramesh is a guest."""
     with session_scope() as s:
         for tid, name, role in ((SAGAR, "Sagar", "admin"), (BIREN, "Biren", "owner"),
@@ -45,8 +75,9 @@ def bot(tg, llm):
             s.add(Member(telegram_user_id=tid, name=name, role=role, status="active"))
     app.dependency_overrides[get_telegram] = lambda: tg
     app.dependency_overrides[get_llm] = lambda: llm
+    app.dependency_overrides[get_mailer] = lambda: mailer
     with TestClient(app) as c:
-        yield Bot(c, tg, llm)
+        yield Bot(c, tg, llm, mailer)
     app.dependency_overrides.clear()
 
 

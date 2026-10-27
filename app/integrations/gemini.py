@@ -58,6 +58,7 @@ class LlmError(Exception):
 class Chat(Protocol):
     def send_user(self, text: str) -> Turn: ...
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn: ...
+    def send_media(self, text: str, data: bytes, mime_type: str) -> Turn: ...
 
 
 class LLM(Protocol):
@@ -108,6 +109,12 @@ class GeminiChat:
 
     def send_user(self, text: str) -> Turn:
         self._contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+        return self._next()
+
+    def send_media(self, text: str, data: bytes, mime_type: str) -> Turn:
+        """An instruction plus a photo or voice note in one user turn."""
+        self._contents.append(types.Content(role="user", parts=[
+            types.Part.from_text(text=text), types.Part.from_bytes(data=data, mime_type=mime_type)]))
         return self._next()
 
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn:
