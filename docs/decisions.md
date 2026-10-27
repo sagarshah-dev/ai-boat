@@ -80,8 +80,40 @@ separate Cloud Run job.
 **Why:** the app relies on `ON CONFLICT`, JSONB, arrays and vectors; a test on another database
 would prove little. `test_migrations_match_models` fails if a model changes without a migration.
 
+## 11. The model chooses, code decides — and money is always a template
+
+**Chosen:** the model only picks a tool and its arguments. Code then checks them against the
+user's own words (amount written in digits — `2 lakh` included, not a quantity like `5 kg`, an
+item named, payer one of the sharing members) and writes every reply that contains money from a
+fixed template. Search and recent replies are templates too; in version 1 the model totalled
+search results itself.
+**Why:** a model always produces *some* number — version 1 once saved "tea by sagar" as ₹10.
+A template also means the same question gets the same answer, and no second model call.
+**Cost:** template replies are English, while free-text answers follow the user's language.
+
+## 12. Each tool runs in a savepoint
+
+**Chosen:** every tool call is wrapped in a database savepoint.
+**Why:** if a tool fails halfway (wrote a row, then crashed) only that tool's changes are rolled
+back; the rest of the message — and the model's chance to explain — carry on.
+
+## 13. One transaction per message, including the model call
+
+**Chosen:** a message is handled inside one database transaction, model calls included.
+**Why:** simple and safe — the reply is sent only after commit (decision 6).
+**Cost:** a slow model answer keeps a database connection open for up to ~55 s. Fine for a few
+users on one instance; with real traffic the model call moves outside the transaction.
+
+## 14. Who shares expenses
+
+**Chosen:** expenses are split equally between active **admin and owners**. Guests can use every
+feature (and add expenses for an owner) but never pay a share. Names match by full Telegram name
+or, when unique, by first name ("by sagar" → "Sagar Shah").
+
 ## Open
 
-- `processed_updates` grows forever; a scheduled job (step 8) will delete rows older than 7 days.
-- Member names come from Telegram's first and last name; renaming comes with step 5, where names
-  matter for "paid by".
+- `processed_updates` grows forever; a scheduled job (feature 3) will delete rows older than 7 days.
+- When the AI is down, `search ...` has no fallback yet; version 1's fixed search grammar comes
+  with the report scope parser in feature 3. Commands (balance, recent, undo, settle, filters)
+  never need the AI.
+- The settle PDF snapshot and email come with reports (feature 3).

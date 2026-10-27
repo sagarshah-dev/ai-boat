@@ -56,6 +56,38 @@ def get_active(session: Session, telegram_user_id: int) -> Member | None:
     return member if member and member.status == "active" else None
 
 
+SPLIT_ROLES = ("admin", "owner")
+
+
+def split_members(session: Session) -> list[Member]:
+    """The people expenses are shared between: active admin + owners, in joining order.
+    Guests use the bot but never pay a share and never appear in balances."""
+    return list(session.scalars(
+        select(Member).where(Member.status == "active", Member.role.in_(SPLIT_ROLES))
+        .order_by(Member.id)))
+
+
+def match_name(people: list[Member], raw: object) -> Member | None:
+    """'sagar', ' SAGAR ', 'Sagar Shah' -> the Sagar member, case-insensitive.
+
+    Names come from Telegram ("Sagar Shah"), but people type first names ("tea by sagar"). The
+    full name always matches; a first name matches only when exactly one person has it, so two
+    Rameshes can never be mixed up — the bot asks instead."""
+    wanted = " ".join(str(raw or "").lower().split())
+    if not wanted:
+        return None
+    exact = [m for m in people if " ".join(m.name.lower().split()) == wanted]
+    if exact:
+        return exact[0]
+    by_first = [m for m in people if m.name.lower().split()[:1] == [wanted]]
+    return by_first[0] if len(by_first) == 1 else None
+
+
+def name_words(people: list[Member]) -> set[str]:
+    """Every word of every member's name, lower-case — for 'is this word a person?' checks."""
+    return {w for m in people for w in m.name.lower().split()}
+
+
 def request_access(session: Session, user: TgUser,
                    admin_telegram_id: int) -> tuple[StartOutcome, Member | None]:
     """Handles /start. The configured admin is let in directly; everyone else waits for approval."""

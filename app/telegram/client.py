@@ -56,6 +56,15 @@ class TelegramClient:
             payload["reply_markup"] = _keyboard(buttons)
         return self.call("sendMessage", payload) is not None
 
+    def send_typing(self, chat_id: int) -> None:
+        """Shows "typing…" while the AI works. Cosmetic: one try, short timeout, never retried,
+        so it can never delay the real reply."""
+        try:
+            self._http.post(f"{self._base}/sendChatAction",
+                            json={"chat_id": chat_id, "action": "typing"}, timeout=3.0)
+        except httpx.HTTPError:
+            pass
+
     def edit_message_text(self, chat_id: int, message_id: int, text: str) -> bool:
         """Replaces a message's text and removes its buttons, so nobody can press them twice."""
         return self.call("editMessageText", {
