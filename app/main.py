@@ -1,5 +1,6 @@
 """App entry point: builds the FastAPI app and mounts the routes."""
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -32,11 +33,16 @@ app.include_router(jobs_router)
 
 @app.get("/health")
 def health() -> JSONResponse:
-    """Liveness + database check. Also the cheap call that wakes a cold instance."""
+    """Liveness + database check. Also the cheap call that wakes a cold instance.
+
+    `revision` is set by Cloud Run itself (K_REVISION): one look at /health tells which deploy is
+    actually serving — an old revision can keep the traffic when a new one fails to start."""
+    revision = os.environ.get("K_REVISION", "local")
     try:
         with session_scope() as session:
             session.execute(text("SELECT 1"))
     except Exception:
         log.exception("health check: database unreachable")
-        return JSONResponse({"status": "error", "db": "unreachable"}, status_code=503)
-    return JSONResponse({"status": "ok", "db": "ok"})
+        return JSONResponse({"status": "error", "db": "unreachable", "revision": revision},
+                            status_code=503)
+    return JSONResponse({"status": "ok", "db": "ok", "revision": revision})

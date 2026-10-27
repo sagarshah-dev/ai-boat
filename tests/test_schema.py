@@ -69,4 +69,4 @@ def test_health_reports_database_ok():
     with TestClient(app) as c:
         r = c.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "db": "ok"}
+    assert r.json() == {"status": "ok", "db": "ok", "revision": "local"}
