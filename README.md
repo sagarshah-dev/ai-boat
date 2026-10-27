@@ -25,16 +25,16 @@ about Telegram, so another channel (WhatsApp, a web page) can reuse the services
 
 ## Status
 
-| Step | | |
+| | | |
 |---|---|---|
-| 1–3 | Accounts, structure, schema | ✅ |
-| 4 | Core: webhook, access control, dedup, schema + migrations, CI | ✅ |
-| 5 | Expenses: add, balance, settle, undo, search | next |
-| 6 | Photo and voice | |
-| 7 | Farm journal + RAG | |
-| 8 | Meetings, PDF reports, email, scheduled jobs | |
-| 9 | AI evals in CI | |
-| 10 | Cloud Run deploy | |
+| Setup | Accounts, structure, schema, core (webhook, access, dedup, CI) | ✅ |
+| Feature 1 | Expenses (typed): add, balance, settle, undo, recent, search, filters | ✅ |
+| Feature 2 | Photo and voice expenses | next |
+| Feature 3 | PDF reports, email, scheduled jobs | |
+| Feature 4 | Meetings (Google Calendar) | |
+| Feature 5 | Farm journal + RAG | |
+| Feature 6 | AI evals in CI | |
+| Feature 7 | Cloud Run deploy | |
 
 ## Access
 
@@ -42,6 +42,23 @@ Nobody can use the bot until approved. The admin (set by `ADMIN_TELEGRAM_ID`) is
 `/start`; anyone else who sends `/start` creates a request, and the admin gets **Owner / Guest /
 Reject** buttons. Owners share expenses; guests can use every feature but are never part of the
 split. Only the admin can approve people.
+
+## Using it
+
+Type an expense in plain words — `150 tea by sagar`, `diesel 2k`, `2 lakh tractor` — or several
+lines for several expenses. Ask in your own words: `hisab aapo`, `sagar no kharch aa mahine`.
+
+| Command | |
+|---|---|
+| `balance` / `bal` | who is pending, who gets back, settle-up plan |
+| `recent` | last 5 entries |
+| `undo` | removes your own last unsettled entry |
+| `sagar`, `fuel expenses` | every entry for a person or category, with total |
+| `search ...` | `search diesel after 1 oct` |
+| `settle` | asks for the PIN, then settles up |
+
+Money is never worded by the AI: every reply carrying an amount comes from a fixed template, and
+an amount is saved only if it is written in the message (`tea by sagar` is asked, not guessed).
 
 ## Run it on your PC (Windows)
 
@@ -80,8 +97,10 @@ app/
   config.py         settings from environment
   core/logging.py   JSON logs (Cloud Run severity + update_id on every line)
   db/               session.py (connection), models.py (tables)
-  telegram/         webhook.py (entry point, routing), client.py (Bot API)
-  services/         members.py (access requests, approval)
+  telegram/         webhook.py (entry, access), commands.py (command words), client.py
+  ai/               agent.py (model loop + gates), guards.py (grounding rules), tools.py
+  services/         members, expenses, balance, settlements, pending (waiting questions)
+  integrations/     gemini.py (retries, fallback model, time budget)
 migrations/         Alembic schema versions
 scripts/            dev_polling.py (local), set_webhook.py (after deploy)
 tests/              pytest, real Postgres

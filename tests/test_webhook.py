@@ -10,7 +10,7 @@ from app.db.models import Member, ProcessedUpdate
 from app.db.session import session_scope
 from app.main import app
 from app.telegram import webhook
-from app.telegram.webhook import get_telegram
+from app.telegram.webhook import get_llm, get_telegram
 from tests.conftest import ADMIN_ID
 
 SECRET = "test-secret-0123456789"
@@ -19,8 +19,9 @@ _ids = itertools.count(1)
 
 
 @pytest.fixture
-def client(tg):
+def client(tg, llm):
     app.dependency_overrides[get_telegram] = lambda: tg
+    app.dependency_overrides[get_llm] = lambda: llm
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -154,8 +155,8 @@ def test_admin_approves(client, tg, choice, label):
     assert tg.edits[-1]["text"] == f"✅ Ramesh approved as {label}."
     assert f"approved as {label}" in tg.texts_to(FRIEND_ID)[-1]
     # Approved member can now use the bot.
-    post(client, msg(FRIEND_ID, "hello"))
-    assert "Got it, Ramesh" in tg.texts_to(FRIEND_ID)[-1]
+    post(client, msg(FRIEND_ID, "balance"))
+    assert "Balance Status" in tg.texts_to(FRIEND_ID)[-1]
 
 
 def test_admin_rejects(client, tg):

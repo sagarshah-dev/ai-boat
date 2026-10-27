@@ -19,7 +19,9 @@ from app.core.logging import bind, reset
 from app.db.models import ProcessedUpdate
 from app.db.session import session_scope
 from app.services import members
+from app.integrations.gemini import LLM, GeminiLLM
 from app.services.members import Decision, DecisionOutcome, StartOutcome, TgUser
+from app.telegram import commands
 from app.telegram.client import Buttons, TelegramClient
 
 log = logging.getLogger(__name__)
@@ -58,23 +60,32 @@ def get_telegram() -> TelegramClient:
     return TelegramClient(get_settings().telegram_token)
 
 
+@lru_cache
+def get_llm() -> LLM:
+    s = get_settings()
+    return GeminiLLM(api_key=s.gemini_api_key, model=s.gemini_model,
+                     fallback_model=s.gemini_fallback_model)
+
+
 @router.post("/telegram/webhook")
 def telegram_webhook(
     update: dict[str, Any] = Body(...),
     secret: str | None = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token"),
     settings: Settings = Depends(get_settings),
     tg: TelegramClient = Depends(get_telegram),
+    llm: LLM = Depends(get_llm),
 ) -> dict[str, bool]:
     # Constant-time compare: a plain == leaks how many leading characters were right.
     if not hmac.compare_digest((secret or "").encode(), settings.telegram_webhook_secret.encode()):
         raise HTTPException(status_code=401, detail="bad secret")
-    handle_update(update, tg, settings)
+    handle_update(update, tg, settings, llm)
     # Always 200 for a genuine update, even after an internal error: a non-200 makes Telegram
     # retry the same update for hours and hold back every newer message behind it.
     return {"ok": True}
 
 
-def handle_update(update: dict[str, Any], tg: TelegramClient, settings: Settings) -> None:
+def handle_update(update: dict[str, Any], tg: TelegramClient, settings: Settings,
+                  llm: LLM | None = None) -> None:
     """Shared by the webhook (Cloud Run) and scripts/dev_polling.py (local), so both behave alike."""
     update_id = update.get("update_id")
     if not isinstance(update_id, int):
@@ -91,7 +102,7 @@ def handle_update(update: dict[str, Any], tg: TelegramClient, settings: Settings
                 log.info("duplicate update skipped")
                 return
         with session_scope() as session:
-            actions = route(session, update, settings)
+            actions = route(session, update, settings, llm or get_llm(), tg.send_typing)
         deliver(tg, actions)
     except Exception:
         log.exception("update failed")
@@ -121,16 +132,18 @@ def deliver(tg: TelegramClient, actions: list[Action]) -> None:
 
 # ── Routing ─────────────────────────────────────────────────────────────────────────────────
 
-def route(session: Session, update: dict[str, Any], settings: Settings) -> list[Action]:
+def route(session: Session, update: dict[str, Any], settings: Settings, llm: LLM,
+          typing: commands.Typing | None = None) -> list[Action]:
     if "callback_query" in update:
         return _on_button(session, update["callback_query"], settings)
     message = update.get("message")
     if message and message.get("from"):
-        return _on_message(session, message, settings)
+        return _on_message(session, message, settings, llm, typing)
     return []  # edited messages, channel posts, etc. are not used yet
 
 
-def _on_message(session: Session, message: dict[str, Any], settings: Settings) -> list[Action]:
+def _on_message(session: Session, message: dict[str, Any], settings: Settings, llm: LLM,
+                typing: commands.Typing | None) -> list[Action]:
     chat_id = message["chat"]["id"]
     user = _tg_user(message["from"])
     text = (message.get("text") or "").strip()
@@ -143,8 +156,10 @@ def _on_message(session: Session, message: dict[str, Any], settings: Settings) -
     if member is None:
         return [Send(chat_id, "🔒 You don't have access yet. Send /start to request it.")]
 
-    # Expenses, journal and AI arrive in the next steps; until then, prove the pipe works.
-    return [Send(chat_id, f"✅ Got it, {member.name}. Expenses and AI are coming in the next update.")]
+    if not text:
+        return [Send(chat_id, commands.NOT_YET)] if (message.get("photo") or message.get("voice")) else []
+    return [Send(chat_id, reply)
+            for reply in commands.handle_text(session, member, chat_id, text, settings, llm, typing)]
 
 
 def _on_start(session: Session, chat_id: int, user: TgUser, settings: Settings) -> list[Action]:

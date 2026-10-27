@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     admin_telegram_id: int = 0
     log_level: str = "INFO"
 
+    gemini_api_key: str = Field(min_length=1)
+    gemini_model: str = "gemini-3.5-flash-lite"
+    # Tried only when the main model stays overloaded or slow after retries. Empty = none.
+    gemini_fallback_model: str = ""
+
+    # PIN for "settle". Empty = settling is switched off (fail closed).
+    settle_pin: str = ""
+    # "Today" for expense dates. The server runs in UTC; the owners live in India.
+    timezone: str = "Asia/Kolkata"
+
 
 @lru_cache
 def get_settings() -> Settings:
