@@ -47,8 +47,13 @@ class Mailer:
         msg["To"] = ", ".join(email.to)
         msg.set_content(email.body)
         for filename, data, mime in email.attachments:
-            main, _, sub = mime.partition("/")
-            msg.add_attachment(data, maintype=main, subtype=sub or "octet-stream", filename=filename)
+            # "text/calendar; method=REQUEST" -> type, subtype and parameters, so calendar apps
+            # recognise an invite (REQUEST) or a cancellation (CANCEL).
+            kind, *raw_params = [p.strip() for p in mime.split(";")]
+            main, _, sub = kind.partition("/")
+            params = dict(p.split("=", 1) for p in raw_params if "=" in p)
+            msg.add_attachment(data, maintype=main, subtype=sub or "octet-stream",
+                               filename=filename, params=params or None)
         return msg
 
     def send(self, email: Email) -> bool:

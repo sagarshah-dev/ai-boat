@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import PendingAction
 
 AMOUNT = "amount"
+TIME = "time"              # a meeting waiting for its time (or am/pm, or a free slot)
 SETTLE_PIN = "settle_pin"
 CONFIRM = "confirm"        # a previewed change waiting for yes / no
 

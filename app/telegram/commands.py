@@ -66,7 +66,8 @@ class Env:
     def ctx(self, *, confirm_writes: bool = False) -> agent.Context:
         return agent.Context(session=self.session, sender=self.sender, chat_id=self.chat_id,
                              today=today(self.settings.timezone), llm=self.llm,
-                             confirm_writes=confirm_writes)
+                             confirm_writes=confirm_writes, settings=self.settings,
+                             now=datetime.now(ZoneInfo(self.settings.timezone)))
 
     def show_typing(self) -> None:
         if self.typing:

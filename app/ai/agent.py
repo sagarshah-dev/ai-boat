@@ -15,13 +15,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import guards, proposals, tools
+from app.ai import guards, meeting_tools, proposals, tools
+from app.config import Settings
 from app.core.formatting import fmt_date, inr, parse_date, to_rupees
 from app.core.replies import Buttons
 from app.db.models import Member
@@ -60,6 +61,8 @@ class Context:
     people: list[Member] = field(default_factory=list)   # who shares expenses
     # Voice notes: every write is PROPOSED and saved only after "yes" (a transcript can be misheard).
     confirm_writes: bool = False
+    settings: Settings | None = None
+    now: datetime | None = None        # the owners' local time; tests pin it
 
     def __post_init__(self):
         if not self.people:
@@ -79,11 +82,11 @@ class ToolRun:
 
     @property
     def needs(self) -> str | None:
-        """'amount' / 'description' when a field is missing — answered by code, not the model."""
-        if self.result.get("needs_amount"):
-            return "amount"
-        if self.result.get("needs_description"):
-            return "description"
+        """Which missing piece the CODE asks the user for (not the model): amount, description,
+        time, ampm, new_time (slot taken), datetime (both day and time missing)."""
+        for key in ("amount", "description", "time", "ampm", "new_time", "datetime"):
+            if self.result.get(f"needs_{key}"):
+                return key
         return None
 
 
@@ -102,18 +105,19 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     """One message. batch=True is one line of a multi-line message: no follow-up question is
     remembered, because several lines could not all wait for an answer at once."""
     user_text = text.strip()
-    waiting = None if batch else pending.get(
-        ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT)
+    waiting = None
+    if not batch:
+        waiting = (pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT)
+                   or pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.TIME))
 
     if not batch and not waiting and (guards.YES.match(user_text) or guards.NO.match(user_text)):
         # Never sent to the model: a bare "yes" with nothing to confirm has no safe meaning.
         return Outcome(NOTHING_WAITING)
 
-    is_slot = bool(waiting) and bool(
-        guards.amount_only_pattern(ctx.people_words).match(user_text))
+    is_slot = bool(waiting) and _is_slot_reply(ctx, waiting, user_text)
     # "tea by sagar" (waiting) + "100" -> "tea by sagar 100", then the normal path: every gate
     # applies to the glued text exactly as if it had been typed in one go.
-    message = f"{waiting.payload['message']} {user_text}" if is_slot else user_text
+    message = _glue(waiting, user_text) if is_slot else user_text
 
     runs, reply, llm_error = _run_model(ctx, message)
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
@@ -129,6 +133,25 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
         return Outcome(reply, added, runs, proposals.buttons(proposal))
     reply = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
     return Outcome(reply, added, runs, llm_error=llm_error)
+
+
+def _is_slot_reply(ctx: Context, waiting: pending.Pending, text: str) -> bool:
+    if waiting.kind == pending.AMOUNT:
+        return bool(guards.amount_only_pattern(ctx.people_words).match(text))
+    if waiting.payload.get("mode") == "ampm" and guards.DAYPART_ONLY.match(text):
+        return True
+    return bool(guards.TIME_ONLY.match(text))
+
+
+def _glue(waiting: pending.Pending, reply: str) -> str:
+    original = waiting.payload["message"]
+    mode = waiting.payload.get("mode", "add")
+    if mode == "ampm":
+        return f"{original} ({reply})"
+    if mode == "replace":
+        # The slot was taken: the new time replaces the old one, the rest (day, title) stays.
+        return f"{original} — not at that time, make it {reply} instead"
+    return f"{original} {reply}"
 
 
 def _merge_proposals(found: list[dict]) -> dict | None:
@@ -168,6 +191,13 @@ def system_prompt(ctx: Context) -> str:
         "never filter or total dates yourself. "
         "AMOUNT: never guess an amount. If the user wants to add an expense but the message has "
         "no amount in digits, call add_expense with amount 0 — the system will ask for it. "
+        "MEETINGS: schedule_meeting, cancel_meeting and reschedule_meeting only PROPOSE; the user "
+        "confirms with yes, so never say a meeting is booked, cancelled or moved. Work out dates "
+        "from 'kale', 'tomorrow', 'next sunday' with today's date; give time as 24-hour HH:MM. "
+        "If the date or the time is missing, leave it empty — the system asks. Always call "
+        "find_meetings before cancel_meeting or reschedule_meeting; if more than one meeting could "
+        "match, ask which one. "
+        "BALANCE: if you used get_balances with other tools, never rewrite its numbers. "
         "If a tool returns an error, explain it simply and ask the user what is needed."
     )
 
@@ -176,15 +206,15 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | No
     runs: list[ToolRun] = []
     done_writes: set[str] = set()
     try:
-        chat = ctx.llm.start(system_prompt(ctx),
-                             tools.expense_tools([m.name for m in ctx.people]), LLM_BUDGET_S)
+        chat = ctx.llm.start(system_prompt(ctx), all_tools(ctx), LLM_BUDGET_S)
         turn = chat.send_user(message)
         for round_no in range(1, MAX_ROUNDS + 1):
             if not turn.calls:
                 return runs, turn.text or "Sorry, I couldn't complete that. Please try again.", None
             round_runs = [_run_tool(ctx, call, message, done_writes) for call in turn.calls]
             runs += round_runs
-            if not _unresolved_errors(runs):
+            needs_model = any(r.name in NEEDS_MODEL and r.ok for r in round_runs)
+            if not _unresolved_errors(runs) and not needs_model:
                 # Everything left is a template or a missing field the code asks about itself:
                 # no second model call — cheaper, faster, and the numbers can't be reworded.
                 return runs, _templates(runs), None
@@ -222,6 +252,13 @@ def _run_tool(ctx: Context, call: ToolCall, message: str, done_writes: set[str])
     return ToolRun(call.name, call.args, result)
 
 
+NEEDS_MODEL = set(meeting_tools.NEEDS_MODEL)
+
+
+def all_tools(ctx: Context):
+    return tools.expense_tools([m.name for m in ctx.people]) + meeting_tools.specs()
+
+
 def _unresolved_errors(runs: list[ToolRun]) -> list[ToolRun]:
     """Errors the model must see and fix (bad date, unknown payer). A missing amount or item is
     NOT one — code asks the user directly. An error is resolved once a later call of the same
@@ -239,6 +276,8 @@ def _for_model(result: dict) -> dict:
 # ── Tools ───────────────────────────────────────────────────────────────────────────────────
 
 def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) -> dict:
+    if name in meeting_tools.NAMES:
+        return meeting_tools.execute(ctx, name, args, message)
     if name == tools.ADD_EXPENSE:
         return _add_expense(ctx, args, message)
     if name == tools.GET_BALANCES:
@@ -376,46 +415,74 @@ def _ask_amount(original: str) -> str:
 
 def _follow_up(ctx: Context, waiting: pending.Pending | None, is_slot: bool, user_text: str,
                runs: list[ToolRun], reply: str) -> str:
-    """Decides, in code, what happens to a waiting entry after this message, and the final reply.
-    Rules (same as the old bot): a saved expense clears it; a new entry missing its amount
-    replaces it; a reply that still has no valid amount uses up one of three tries."""
+    """Decides, in code, what happens to a waiting question after this message, and the final
+    reply. Rules (same as the old bot): a saved expense clears it; a new request missing a piece
+    replaces it; a reply that still does not complete it uses up one of three tries."""
     s, chat, who = ctx.session, ctx.chat_id, ctx.sender.id
     joined = lambda *parts: "\n\n".join(p for p in parts if p)  # noqa: E731
+    needs = {r.needs: r for r in runs if r.needs}
 
     if any(r.name == tools.ADD_EXPENSE and r.ok for r in runs):
         pending.drop(s, chat, who, pending.AMOUNT)
         return reply
 
-    if any(r.needs == "amount" for r in runs) and not is_slot:
+    if "amount" in needs and not is_slot:
+        pending.drop(s, chat, who, pending.TIME)
         pending.put(s, chat, who, pending.AMOUNT, {"message": user_text, "tries_left": MAX_TRIES})
         # Keep whatever else this message produced (e.g. a balance asked in the same breath) —
         # the old bot replaced it with the question and the balance was lost.
         return joined(reply, _ask_amount(user_text))
 
-    item_missing = next((r.result for r in runs if r.needs == "description"), None)
-    if item_missing:
-        amt = inr(item_missing["amount"])
+    time_need = next((k for k in ("time", "ampm", "new_time") if k in needs), None)
+    if time_need and not is_slot:
+        pending.drop(s, chat, who, pending.AMOUNT)
+        mode = {"time": "add", "ampm": "ampm", "new_time": "replace"}[time_need]
+        pending.put(s, chat, who, pending.TIME, {"message": user_text, "tries_left": MAX_TRIES,
+                                                 "mode": mode})
+        if time_need == "time":
+            ask = f"📅 \"{user_text}\" — what time?\nSend just the time, e.g. 5pm or 17:00 (within 2 minutes)."
+        elif time_need == "ampm":
+            h = needs["ampm"].result["needs_ampm"]
+            ask = (f"🕐 \"{user_text}\" — {h} o'clock in the morning or the evening?\n"
+                   f"Send \"{h}am\" / \"{h}pm\" or \"savare\" / \"saanje\" (within 2 minutes).")
+        else:
+            # The old bot asked "pick another time" but could not receive the answer. Now the
+            # request is remembered, so a reply like "6pm" moves it.
+            ask = (f"❌ {needs['new_time'].result['conflict']}\nSend another time (e.g. 6pm) within "
+                   "2 minutes, or cancel that meeting first.")
+        return joined(reply, ask)
+
+    if "datetime" in needs:
+        pending.drop(s, chat, who, pending.TIME)
+        return joined(reply, "📅 When? Send the day and time together, e.g. \"meeting sunday 5pm\" "
+                             "or \"kale saanje 6 vagye meeting\".")
+
+    if "description" in needs:
+        amt = inr(needs["description"].result["amount"])
         reply = joined(reply, f"❌ Nothing saved: what was ₹{amt} for?\n"
                               f"Send it with the item, e.g. \"{amt} tea\".")
 
     if not waiting:
         return reply
 
+    noun = "time" if waiting.kind == pending.TIME else "amount"
     original = waiting.payload["message"]
     tries_left = int(waiting.payload.get("tries_left", MAX_TRIES)) - 1
     if tries_left <= 0:
-        pending.drop(s, chat, who, pending.AMOUNT)
-        note = (f"❌ No valid amount after {MAX_TRIES} tries, so \"{original}\" was not saved. "
-                f"Send the full entry again, e.g. 50 tea by {ctx.sender.name.split()[0]}.")
+        pending.drop(s, chat, who, waiting.kind)
+        example = "meeting sunday 5pm" if noun == "time" else f"50 tea by {ctx.sender.name.split()[0]}"
+        note = (f"❌ No valid {noun} after {MAX_TRIES} tries, so \"{original}\" was not saved. "
+                f"Send the full {'request' if noun == 'time' else 'entry'} again, e.g. {example}.")
         return note if is_slot else joined(reply, note)
 
-    pending.put(s, chat, who, pending.AMOUNT, {"message": original, "tries_left": tries_left})
+    pending.put(s, chat, who, waiting.kind, {**waiting.payload, "tries_left": tries_left})
     left = f"{tries_left} {'try' if tries_left == 1 else 'tries'} left"
+    example = "5pm" if noun == "time" else "100"
     if is_slot:
-        return (f"❌ \"{user_text}\" is not a valid amount for \"{original}\".\n"
-                f"Send just the amount, e.g. 100 ({left}).")
-    return joined(reply, f"⏳ Still waiting for the amount for \"{original}\" — "
-                         f"send just the amount ({left}).")
+        return (f"❌ \"{user_text}\" is not a valid {noun} for \"{original}\".\n"
+                f"Send just the {noun}, e.g. {example} ({left}).")
+    return joined(reply, f"⏳ Still waiting for the {noun} for \"{original}\" — "
+                         f"send just the {noun} ({left}).")
 
 
 # ── Small parsing helpers ───────────────────────────────────────────────────────────────────

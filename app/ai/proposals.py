@@ -58,6 +58,7 @@ def store(session: Session, chat_id: int, member: Member, p: dict) -> None:
     """Newest proposal wins: only one thing may own this person's "yes" at a time."""
     pending.put(session, chat_id, member.id, pending.CONFIRM, p)
     pending.drop(session, chat_id, member.id, pending.AMOUNT)
+    pending.drop(session, chat_id, member.id, pending.TIME)
 
 
 def apply(ctx: "Context", p: dict, pick: int | None = None) -> list[Out]:

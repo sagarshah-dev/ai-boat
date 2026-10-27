@@ -47,6 +47,8 @@ class Settings(BaseSettings):
 
     # Google Calendar for meetings. Empty = meetings are kept in the bot only.
     calendar_id: str = ""
+    # Key of the service account the calendar is shared with (the JSON text itself).
+    google_service_account_json: str = ""
 
     @property
     def recipients(self) -> tuple[str, ...]:

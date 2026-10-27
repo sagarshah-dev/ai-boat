@@ -79,3 +79,14 @@ def amount_only_pattern(people_words: set[str]) -> re.Pattern:
         r"^\s*(?:₹|rs\.?|inr)?\s*\d[\d,]*(?:\.\d+)?\s*(?:k|lakhs?|lacs?|crores?|cr|rs\.?|rupees?|₹|/-)?"
         r"(?:\s+(?:paid\s+)?by\s+(?:" + names + r"))?\s*$",
         re.IGNORECASE)
+
+
+# "Just a time": 5, 5pm, 17:00, 5:30, 5 vagye, saanje 5, સાંજે 5. Kept apart from the amount
+# pattern: "5" means ₹5 when an expense waits and 5 o'clock when a meeting waits — the waiting
+# question's kind decides, so the same text is never ambiguous.
+_TIME_WORDS = (r"vagye|vage|vaagye|baje|baaje|o\s*clock|o'clock|saanje|sanje|saware|savare|sawar|"
+               r"bapore|ratre|morning|evening|afternoon|night|વાગે|સાંજે|સવારે|બપોરે|રાત્રે")
+TIME_ONLY = re.compile(r"^\s*(?:" + _TIME_WORDS + r")?\s*\d{1,2}(?:[:.]\d{2})?\s*"
+                       r"(?:am|pm|a\.m\.|p\.m\.|" + _TIME_WORDS + r")?\s*$", re.IGNORECASE)
+DAYPART_ONLY = re.compile(r"^\s*(am|pm|morning|evening|afternoon|night|savare|saware|saanje|sanje|"
+                          r"bapore|ratre|સવારે|સાંજે|બપોરે|રાત્રે)\s*$", re.IGNORECASE)
