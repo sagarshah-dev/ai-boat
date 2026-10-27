@@ -110,10 +110,77 @@ users on one instance; with real traffic the model call moves outside the transa
 feature (and add expenses for an owner) but never pay a share. Names match by full Telegram name
 or, when unique, by first name ("by sagar" → "Sagar Shah").
 
+## 15. Propose, then confirm — stored in the database
+
+**Chosen:** photos, voice notes, meetings and farm notes are shown as a preview and applied only
+after **yes** (or ✅). The preview is stored in `pending_actions`; yes / no / a number are matched
+by regex, never by the model. Apply checks everything again (the row may have changed since).
+**Why:** a misread khata line or a misheard voice note is caught before it becomes data; a wrong
+meeting lands on three phones. Version 1 kept previews in memory, so a restart between preview
+and "yes" lost them. Typed expenses are NOT confirmed — one undo fixes them, and a confirmation
+on every tea would stop people logging.
+
+## 16. Buttons send what a person could type
+
+**Chosen:** every button carries text a person could have typed ("yes", "2", "Mango") or one of a
+few fixed actions (`menu:*`, `fu:<id>:<w|p|n|u>`); anything else is refused before it reaches the
+AI. A button counts as the PRESSER's message.
+**Why:** one code path for tap and typing; in a group, Biren tapping Sagar's Save finds nothing
+waiting for Biren. Button data comes from the client, so it is treated as untrusted input.
+
+## 17. One daily job, decided by date
+
+**Chosen:** Cloud Scheduler calls `POST /jobs/daily` (header `X-Jobs-Secret`) once a day; the code
+decides what is due (weekly report Mondays, monthly on the 1st, farm follow-ups, search sync).
+**Why:** Cloud Scheduler is free for 3 jobs per billing account; one entry point keeps it at one.
+Each task runs on its own and failures are reported, never hidden (version 1's email failed
+silently for weeks).
+
+## 18. Meetings: the bot's table is the record, the calendar is a copy
+
+**Chosen:** a meeting is saved in `meetings`; Google Calendar gets a copy. A calendar failure is
+reported ("saved here, add it by hand"), not treated as a failed booking.
+**Cost:** an edit made directly in Google Calendar is not read back (no reverse sync yet).
+
+## 19. Farm search: hybrid retrieval with code-built answers
+
+**Chosen:** vector search (pgvector, exact scan) plus keyword overlap on our own term list,
+fused by Reciprocal Rank Fusion, behind a similarity threshold. Plant / date / activity filters
+are decided in code from the user's words. The model fills a fixed form (answer, cited ids,
+missing); code rejects an answer that cites an id it was not given or contains a number not in a
+cited note, and writes the source line itself.
+**Why:** on a farm the dangerous hallucination is an invented dose. Every number in an answer
+can be traced to a note. Keyword search keeps `0:52:34` from matching `13:0:45`.
+**No vector index:** a few thousand rows scan exactly in milliseconds; an approximate index can
+silently drop the right note. Add HNSW past ~50k chunks.
+
+## 20. Translate once, embed both
+
+**Chosen:** each note is translated to English once, stored (`note_english`), and embedded
+together with the original. Answers and number checks use only the original words.
+**Why:** notes are romanised Gujarati ("udhai"); embedding models handle that poorly. A question
+in any language then meets the note in one language. A mistranslated "75 ml" can never reach an
+answer.
+
+## 21. Exact questions are answered from rows, not from search
+
+**Chosen:** "when / how many" questions read the journal table directly; only when the user's
+topic word matches nothing ("termite" vs "udhai") is meaning search used to FIND the rows — the
+date printed still comes from the row, and a stale search copy is skipped, never trusted.
+**Why:** dates and counts must be exact. Version 1's v15 bug: a topic the model "corrected"
+widened the search to every note.
+
+## 22. Evals with the real model, on demand
+
+**Chosen:** `evals/` runs the real Gemini models through the real webhook on a throwaway Postgres
+and grades outcomes in code (rows written, rows deleted, tools chosen, notes retrieved). A GitHub
+Actions workflow runs it on demand; the one number that must stay 0 is "wrong writes".
+**Why:** unit tests script the model, so they prove the checks work IF the model does X. Evals
+prove what it does. Not on every push: it uses the free-tier quota.
+
 ## Open
 
-- `processed_updates` grows forever; a scheduled job (feature 3) will delete rows older than 7 days.
-- When the AI is down, `search ...` has no fallback yet; version 1's fixed search grammar comes
-  with the report scope parser in feature 3. Commands (balance, recent, undo, settle, filters)
-  never need the AI.
-- The settle PDF snapshot and email come with reports (feature 3).
+- Google Calendar → bot sync: an event moved directly in the calendar is not read back.
+- Meeting reminders (the `reminder_sent` column is ready; the job is not written yet).
+- The similarity threshold (`RAG_MIN_SCORE`, 0.62 from version 1) should be re-checked with
+  `evals/run_rag_evals.py` on this deployment.

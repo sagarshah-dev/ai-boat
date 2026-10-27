@@ -1,0 +1,20 @@
+{"id": "log-fertilizer", "text": "aaje humic acid aapyu badha chhod ma", "tool": "log_farm_activity"}
+{"id": "log-spray-gujarati", "text": "આજે આંબામાં લીમડાનો સ્પ્રે કર્યો", "tool": "log_farm_activity"}
+{"id": "log-dead", "text": "2 aamba sukai gaya", "tool": "log_farm_activity"}
+{"id": "log-observation", "text": "limbu na pan pila padya che", "tool": "log_farm_activity"}
+{"id": "result", "text": "copper pachhi daag band thai gaya", "tool": "record_treatment_result"}
+{"id": "exact-last", "text": "humic chhelle kyare aapyu?", "tool": "get_farm_activities"}
+{"id": "exact-period", "text": "October ma aamba ma shu shu karyu?", "tool": "get_farm_activities"}
+{"id": "counts", "text": "ketla aamba jivant che?", "tool": "get_plant_counts"}
+{"id": "search-meaning", "text": "pehla fungus aavi tyare shu karyu hatu?", "tool": "search_farm_notes"}
+{"id": "search-advice", "text": "nava chhod ne paani ketlu aapvu?", "tool": "search_farm_notes"}
+{"id": "expense-not-farm", "text": "500 diesel by biren", "tool": "add_expense"}
+{"id": "meeting-not-farm", "text": "kale saanje 5 vagye meeting", "tool": "schedule_meeting"}
+{"id": "real-ask-method", "text": "udhai treatment kevi rite karyu hatu?", "tool": "search_farm_notes"}
+{"id": "real-ask-when", "text": "udhai treatment kyare karyu last time", "tool": "get_farm_activities"}
+{"id": "synonym-when", "text": "termite kyare karyu?", "tool": "get_farm_activities"}
+{"id": "typo-when", "text": "termit kyare karyu?", "tool": "get_farm_activities"}
+{"id": "gujarati-when", "text": "ઉધઈ ક્યારે કરી?", "tool": "get_farm_activities"}
+{"id": "real-advice-plan", "text": "watering plans : plantation karya pachi first week every day watering, from 2nd week to 4th week -alternative days. after 4 week , once in 3-4 days", "tool": "save_farm_advice"}
+{"id": "advice-farmer-says", "text": "farmer kahe che ke phool aave tyare 0:52:34 aapvu", "tool": "save_farm_advice"}
+{"id": "done-not-advice", "text": "aaje badha chhod ne paani aapyu", "tool": "log_farm_activity"}

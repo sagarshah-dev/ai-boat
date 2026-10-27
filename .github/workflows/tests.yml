@@ -29,3 +29,49 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+
+  # Same suite again, through PgBouncer in TRANSACTION mode — what Neon's pooled connection
+  # string is. Catches what a direct connection hides: prepared statements and session settings
+  # that do not survive a pooler handing each transaction to a different server connection.
+  test-through-pgbouncer:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: boat
+          POSTGRES_PASSWORD: boat
+          POSTGRES_DB: boat_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U boat"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://boat:boat@127.0.0.1:6432/boat_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Start PgBouncer (transaction mode)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q pgbouncer
+          mkdir -p /tmp/pgb
+          printf '"boat" "boat"\n' > /tmp/pgb/userlist.txt
+          cat > /tmp/pgb/pgbouncer.ini <<'INI'
+          [databases]
+          boat_test = host=127.0.0.1 port=5432 dbname=boat_test
+          [pgbouncer]
+          listen_addr = 127.0.0.1
+          listen_port = 6432
+          auth_type = plain
+          auth_file = /tmp/pgb/userlist.txt
+          pool_mode = transaction
+          default_pool_size = 5
+          ignore_startup_parameters = extra_float_digits
+          pidfile = /tmp/pgb/pgbouncer.pid
+          INI
+          pgbouncer -d /tmp/pgb/pgbouncer.ini
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q

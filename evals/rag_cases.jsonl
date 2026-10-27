@@ -1,0 +1,22 @@
+{"id": "fodla-daag-meaning", "q": "aamba na pan par daag padya che, pehla aavu thayu tyare shu karyu hatu?", "expect_ids": ["J-6"], "any_of": ["J-4", "J-5"], "must": ["copper"], "not_found": false}
+{"id": "fungus-english", "q": "what did we do last time mango leaves had fungus spots?", "expect_ids": ["J-6"], "must": ["copper"], "not_found": false}
+{"id": "gujarati-script", "q": "આંબાના પાન પર ડાઘ માટે શું કર્યું હતું?", "expect_ids": ["J-6"], "not_found": false}
+{"id": "neem-dose-in-note", "q": "fodla vakhte neem ketla ml nakhyu hatu?", "expect_ids": ["J-4"], "must": ["50"], "forbid": ["100"], "not_found": false}
+{"id": "who-sprayed", "q": "neem spray kone karyo hato?", "expect_ids": ["J-4"], "must": ["majoor"], "not_found": false}
+{"id": "time-not-written", "q": "neem spray savare karyo hato k saanje?", "expect_ids": ["J-4"], "forbid": ["savare karyo", "saanje karyo", "morning", "evening"], "expect_missing": true, "not_found": false}
+{"id": "termite-chiku", "q": "chiku ma udhai mate shu karyu hatu?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
+{"id": "termite-advice", "q": "udhai mate farmer e shu kahyu hatu?", "expect_ids": ["K-1#1"], "must": ["neem"], "not_found": false}
+{"id": "new-plant-water", "q": "nava chhod ne paani ketla divase aapvu?", "expect_ids": ["K-1#1"], "must": ["15"], "not_found": false}
+{"id": "npk-exact", "q": "phool aave tyare kayu khatar aapvu?", "expect_ids": ["K-1#1"], "must": ["0:52:34"], "not_found": false}
+{"id": "yellow-leaves-lemon", "q": "limbu ma pila pan mate shu karyu?", "expect_ids": ["J-8"], "any_of": ["J-7"], "must": ["zinc"], "not_found": false}
+{"id": "fruit-fly-guava", "q": "jamfal na fal ma jivat che, pehla jovayu hatu?", "expect_ids": ["J-12"], "not_found": false}
+{"id": "coconut-water", "q": "nariyel ne paani kevi rite aapiye chhiye?", "expect_ids": ["J-10"], "must": ["drip"], "not_found": false}
+{"id": "nf-tractor", "q": "tractor service chhelli kyare karavi?", "not_found": true}
+{"id": "nf-price", "q": "keri na bhav ketla aave che market ma?", "not_found": true}
+{"id": "nf-coconut-disease", "q": "nariyel ma kayo rog aavyo hato?", "not_found": true}
+{"id": "nf-dose-copper-lemon", "q": "limbu ma copper ketlu nakhvu?", "not_found": true, "forbid": ["ml", "gram"]}
+{"id": "nf-pomegranate", "q": "dadam ma fungus mate shu karyu?", "not_found": true}
+{"id": "termite-english-for-udhai", "q": "what did we do for termites?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
+{"id": "termite-romanized-typo", "q": "udhay mate shu karyu hatu?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
+{"id": "termite-hindi", "q": "दीमक के लिए क्या किया था?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
+{"id": "termite-gujarati-script", "q": "ઉધઈ માટે શું કર્યું હતું?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "not_found": false}
