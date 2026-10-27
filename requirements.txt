@@ -9,6 +9,7 @@ pydantic-settings==2.16.1
 httpx==0.28.1
 python-dotenv==1.2.3
 google-genai==2.33.0
+fpdf2==2.8.9
 
 # Test-only
 pytest==9.1.1

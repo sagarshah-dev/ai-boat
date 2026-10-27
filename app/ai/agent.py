@@ -93,6 +93,7 @@ class Outcome:
     added: list[ExpenseView] = field(default_factory=list)
     runs: list[ToolRun] = field(default_factory=list)
     buttons: Buttons | None = None
+    llm_error: str | None = None   # set when the model could not answer (kind: quota, timeout...)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────────────
@@ -114,11 +115,11 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     # applies to the glued text exactly as if it had been typed in one go.
     message = f"{waiting.payload['message']} {user_text}" if is_slot else user_text
 
-    runs, reply = _run_model(ctx, message)
+    runs, reply, llm_error = _run_model(ctx, message)
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
              and "expense" in r.result]
     if batch:
-        return Outcome(reply, added, runs)
+        return Outcome(reply, added, runs, llm_error=llm_error)
 
     proposal = _merge_proposals([r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
     if proposal:
@@ -127,7 +128,7 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
         reply = "\n\n".join(p for p in (reply, proposals.preview(proposal)) if p)
         return Outcome(reply, added, runs, proposals.buttons(proposal))
     reply = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
-    return Outcome(reply, added, runs)
+    return Outcome(reply, added, runs, llm_error=llm_error)
 
 
 def _merge_proposals(found: list[dict]) -> dict | None:
@@ -171,7 +172,7 @@ def system_prompt(ctx: Context) -> str:
     )
 
 
-def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str]:
+def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | None]:
     runs: list[ToolRun] = []
     done_writes: set[str] = set()
     try:
@@ -180,27 +181,27 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str]:
         turn = chat.send_user(message)
         for round_no in range(1, MAX_ROUNDS + 1):
             if not turn.calls:
-                return runs, turn.text or "Sorry, I couldn't complete that. Please try again."
+                return runs, turn.text or "Sorry, I couldn't complete that. Please try again.", None
             round_runs = [_run_tool(ctx, call, message, done_writes) for call in turn.calls]
             runs += round_runs
             if not _unresolved_errors(runs):
                 # Everything left is a template or a missing field the code asks about itself:
                 # no second model call — cheaper, faster, and the numbers can't be reworded.
-                return runs, _templates(runs)
+                return runs, _templates(runs), None
             if round_no == MAX_ROUNDS:
                 break   # don't pay for a model answer we would not use
             turn = chat.send_tool_results([(r.name, _for_model(r.result)) for r in round_runs])
         log.warning("tool loop hit the round limit")
-        return runs, _templates(runs) or "Sorry, I couldn't complete that. Please try again."
+        return runs, _templates(runs) or "Sorry, I couldn't complete that. Please try again.", None
     except LlmError as err:
         log.warning("llm failed", extra={"fields": {"kind": err.kind}})
         wrote = [r for r in runs if r.ok and (r.result.get("expense") or r.result.get("deleted"))]
         if any(r.ok and r.result.get("proposal") for r in runs):
-            return runs, _templates(runs)   # the preview is added by the caller; nothing was saved
+            return runs, _templates(runs), None   # the preview is added by the caller; nothing saved
         if wrote:
             # The save happened; the model only failed to word the reply. Say exactly what was saved.
-            return runs, _templates(wrote) + "\n(The change above is saved.)"
-        return runs, LLM_ERROR_TEXT.get(err.kind, LLM_ERROR_TEXT["unknown"]) + STILL_WORKS
+            return runs, _templates(wrote) + "\n(The change above is saved.)", None
+        return runs, LLM_ERROR_TEXT.get(err.kind, LLM_ERROR_TEXT["unknown"]) + STILL_WORKS, err.kind
 
 
 def _run_tool(ctx: Context, call: ToolCall, message: str, done_writes: set[str]) -> ToolRun:

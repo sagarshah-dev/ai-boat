@@ -137,5 +137,12 @@ def undo_by_id(session: Session, member: Member, expense_id: int) -> ExpenseView
     return view
 
 
+def by_ids(session: Session, ids: list[int]) -> list[ExpenseView]:
+    if not ids:
+        return []
+    rows = session.execute(_query().where(Expense.id.in_(ids)).order_by(Expense.id)).all()
+    return [_view(*r) for r in rows]
+
+
 def total(views: list[ExpenseView]) -> Decimal:
     return sum((v.amount for v in views), Decimal("0"))

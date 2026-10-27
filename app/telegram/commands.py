@@ -13,16 +13,18 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
 from app.ai import agent, guards, media, proposals
 from app.config import Settings
-from app.core.formatting import today
-from app.core.replies import Out, Reply
+from app.core.formatting import inr, today
+from app.core.replies import Document, Out, Reply
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError
-from app.services import balance, expenses, members, pending, settlements
+from app.services import balance, expenses, mail, members, pending, reports, settlements
 from app.services.expenses import CATEGORIES
 
 log = logging.getLogger(__name__)
@@ -37,6 +39,8 @@ HELP_TEXT = (
     "undo — remove your own last entry\n"
     "<name> or <category> — e.g. \"sagar\", \"fuel expenses\"\n"
     "search ... — e.g. \"search diesel after 1 oct\"\n"
+    "report [scope] — PDF, e.g. \"report\", \"report fuel\", \"report last month\"\n"
+    "email [scope] — the same PDF by email\n"
     "settle — settle up (needs the PIN)\n\n"
     "Or ask in your own words: \"hisab aapo\", \"aa mahine ketlo kharch thayo?\""
 )
@@ -84,7 +88,7 @@ def handle_text(env: Env, text: str) -> list[Out]:
         if expired:
             return [Reply("⌛ PIN entry timed out. Send \"settle\" again to retry.")]
         if _pin_ok(raw, env.settings):
-            return [Reply(_settle(env))]
+            return _settle(env)
         return [Reply("❌ Incorrect PIN. Settlement cancelled — send \"settle\" to try again.")]
 
     # 2. A waiting preview gets exactly one answer. Anything else drops it and is handled as a
@@ -107,7 +111,7 @@ def handle_text(env: Env, text: str) -> list[Out]:
     m = re.fullmatch(r"settle\s+(\S+)", lower)
     if m:
         if _pin_ok(m.group(1), env.settings):
-            return [Reply(_settle(env))]
+            return _settle(env)
         return [Reply("❌ Send exactly: settle <PIN>")]
     if lower in ("balance", "bal"):
         return [Reply(balance.compute(s).text)]
@@ -120,6 +124,20 @@ def handle_text(env: Env, text: str) -> list[Out]:
     filtered = _filter(s, lower)
     if filtered is not None:
         return [Reply(filtered)]
+    if re.match(r"report\b", lower):
+        return _report(env, cmd)
+    if re.match(r"email\b", lower):
+        return _email(env, cmd)
+    if re.match(r"(search|find)\b", lower):
+        # Any wording after the keyword goes to the AI; the fixed grammar is the fallback when
+        # the AI is down — searching must keep working without the model.
+        env.show_typing()
+        outcome = agent.handle(env.ctx(), cmd)
+        if outcome.llm_error:
+            scope = reports.parse_scope(s, cmd, today(env.settings.timezone))
+            return [Reply("🤖 AI is unavailable — basic search:\n\n"
+                          + reports.search_text(scope.rows(s), scope.label))]
+        return [Reply(outcome.reply, outcome.buttons)]
 
     # 4. The AI.
     env.show_typing()
@@ -176,8 +194,50 @@ def _pin_ok(given: str, settings: Settings) -> bool:
                                                              settings.settle_pin.encode())
 
 
-def _settle(env: Env) -> str:
-    return settlements.settle(env.session, env.sender, today(env.settings.timezone)).text
+def _now(env: Env) -> datetime:
+    return datetime.now(ZoneInfo(env.settings.timezone))
+
+
+def _settle(env: Env) -> list[Out]:
+    """Settle, then a PDF snapshot of exactly what was settled (taken from the same rows and the
+    same numbers, so the archive can never disagree with the plan), emailed if email is set up."""
+    day = today(env.settings.timezone)
+    result = settlements.settle(env.session, env.sender, day)
+    out: list[Out] = [Reply(result.text)]
+    if result.settlement_id is None:
+        return out
+    rows = expenses.by_ids(env.session, result.balance.expense_ids)
+    scope = reports.Scope("since-settle", f"Settlement #{result.settlement_id} snapshot")
+    report = reports.build_report(env.session, scope, today=day, now=_now(env),
+                                  balance=result.balance, rows=rows)
+    out.append(Document(f"settlement-{result.settlement_id}-{report.filename.split('-', 2)[-1]}",
+                        report.data, f"📄 Settlement snapshot — {report.count} entries, ₹{inr(report.total)}"))
+    if mail.ready(env.settings):
+        out.append(mail.report_email(env.settings, report, "Settlement Report", result.balance))
+    return out
+
+
+def _report(env: Env, cmd: str) -> list[Out]:
+    s, day = env.session, today(env.settings.timezone)
+    scope = reports.parse_scope(s, cmd, day)
+    report = reports.build_report(s, scope, today=day, now=_now(env))
+    if not report.count:
+        return [Reply(f"📄 No entries found for {scope.label} — no PDF to send.")]
+    return [Document(report.filename, report.data,
+                     f"📄 {scope.label} — {report.count} entries, ₹{inr(report.total)} total")]
+
+
+def _email(env: Env, cmd: str) -> list[Out]:
+    if not mail.ready(env.settings):
+        return [Reply(mail.NOT_SET_UP)]
+    s, day = env.session, today(env.settings.timezone)
+    scope = reports.parse_scope(s, cmd, day)
+    report = reports.build_report(s, scope, today=day, now=_now(env))
+    if not report.count:
+        # The old bot mailed an empty PDF here; "report" already said "no entries". Now both do.
+        return [Reply(f"📧 No entries found for {scope.label} — nothing to email.")]
+    return [Reply(f"📧 Emailing {scope.label} — {report.count} entries, ₹{inr(report.total)}…"),
+            mail.report_email(env.settings, report, "Expense Report")]
 
 
 def _filter(session: Session, lower: str) -> str | None:
