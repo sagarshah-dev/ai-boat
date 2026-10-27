@@ -2,7 +2,7 @@
 (app/integrations/email.py), and its outcome is reported in Telegram."""
 from app.config import Settings
 from app.core.formatting import inr
-from app.core.replies import Email
+from app.core.replies import Document, Email
 from app.services.balance import Balance
 from app.services.reports import Report
 
@@ -17,7 +17,9 @@ NOT_SET_UP = ("📧 Email is not set up yet (SMTP settings and RECIPIENT_EMAILS 
 
 
 def report_email(settings: Settings, report: Report, subject_prefix: str,
-                 balance: Balance | None = None) -> Email:
+                 balance: Balance | None = None, *, pdf_in_chat: bool = True) -> Email:
+    """pdf_in_chat=False: the PDF was not sent to the chat, so it is sent there only if the
+    email fails — the failure message promises it."""
     body = (f"Attached: AI BOaT expense report — {report.label}.\n"
             f"Total: ₹{inr(report.total)}\nEntries: {report.count}\n\n"
             "(Blue amounts in the PDF are entries over ₹5,000.)")
@@ -32,4 +34,6 @@ def report_email(settings: Settings, report: Report, subject_prefix: str,
         attachments=((report.filename, report.data, "application/pdf"),),
         ok_note=f"📧 {subject_prefix} emailed to {', '.join(to)}.",
         fail_note=f"⚠️ The {subject_prefix.lower()} email could not be sent. The PDF is in this chat.",
+        fallback=None if pdf_in_chat else Document(report.filename, report.data,
+                                                   f"📄 {report.label} — {report.count} entries"),
     )

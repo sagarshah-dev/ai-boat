@@ -187,6 +187,13 @@ def deliver(tg: TelegramClient, actions: list[Action], mailer: Mailer | None = N
             # its failure is reported instead of hidden.
             ok = bool(mailer and mailer.send(action.email))
             note = action.email.ok_note if ok else action.email.fail_note
+            if not ok:
+                if action.email.fallback is not None:
+                    d = action.email.fallback
+                    tg.send_document(action.chat_id, d.filename, d.data, d.caption)
+                reason = getattr(mailer, "last_error", "") if mailer else "email is not set up"
+                if reason and note:
+                    note += f"\nReason: {reason}"
             if note:
                 tg.send_message(action.chat_id, note)
 

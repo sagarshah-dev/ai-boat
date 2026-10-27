@@ -35,6 +35,7 @@ class Mailer:
     def __init__(self, cfg: SmtpSettings, timeout_s: float = 20.0):
         self.cfg = cfg
         self.timeout_s = timeout_s
+        self.last_error = ""     # why the last send failed, in words the admin can act on
 
     @property
     def configured(self) -> bool:
@@ -57,10 +58,13 @@ class Mailer:
         return msg
 
     def send(self, email: Email) -> bool:
+        self.last_error = ""
         if not self.configured:
+            self.last_error = "SMTP settings are missing"
             log.warning("email skipped: SMTP is not configured")
             return False
         if not email.to:
+            self.last_error = "RECIPIENT_EMAILS is empty"
             log.warning("email skipped: no recipients")
             return False
         try:
@@ -71,5 +75,19 @@ class Mailer:
             log.info("email sent", extra={"fields": {"subject": email.subject, "to": len(email.to)}})
             return True
         except (OSError, smtplib.SMTPException) as exc:
+            self.last_error = failure_reason(exc)
             log.error("email failed", extra={"fields": {"error": type(exc).__name__, "detail": str(exc)[:200]}})
             return False
+
+
+def failure_reason(exc: Exception) -> str:
+    """The cause, named after the setting that fixes it — not a stack trace."""
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "login refused — check SMTP_USER and SMTP_PASSWORD (Gmail needs an App Password)"
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "sender refused — MAIL_FROM must be the SMTP_USER address"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "a recipient address was refused — check RECIPIENT_EMAILS"
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)) and not isinstance(exc, smtplib.SMTPException):
+        return "mail server not reachable — check SMTP_HOST and SMTP_PORT"
+    return f"{type(exc).__name__}"

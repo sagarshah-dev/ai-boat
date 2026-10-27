@@ -36,6 +36,8 @@ class Email:
     attachments: tuple[tuple[str, bytes, str], ...] = ()   # (filename, data, mime type)
     ok_note: str = ""       # told to the user when sent ("" = say nothing)
     fail_note: str = "⚠️ The email could not be sent."
+    # Sent to the chat only if the email fails, so "the PDF is in this chat" is always true.
+    fallback: "Document | None" = None
 
 
 Out = Reply | Document | Photo | Email
