@@ -91,12 +91,11 @@ def test_help(bot):
     assert "AI BOaT" in bot.send(RAMESH, "/help")
 
 
-def test_photo_says_not_yet(bot):
+def test_photo_that_cannot_be_downloaded(bot):
     update = {"update_id": 5, "message": {"message_id": 1, "from": {"id": SAGAR},
-                                          "chat": {"id": SAGAR}, "photo": [{"file_id": "x"}]}}
-    bot.client.post("/telegram/webhook", json=update,
-                    headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret-0123456789"})
-    assert "later update" in bot.tg.texts_to(SAGAR)[-1]
+                                          "chat": {"id": SAGAR}, "photo": [{"file_id": "gone"}]}}
+    assert "Couldn't download that photo" in bot.post(update, SAGAR)
+    assert bot.llm.chats == []
 
 
 # ── Several lines = several expenses ───────────────────────────────────────────────────────

@@ -238,8 +238,8 @@ def test_internal_error_returns_200_and_apologises(client, tg, monkeypatch):
 def test_failed_route_rolls_back_but_update_stays_claimed(client, tg, monkeypatch):
     real_route = webhook.route
 
-    def route_then_crash(session, update, settings):
-        real_route(session, update, settings)  # creates the admin row...
+    def route_then_crash(session, update, *rest):
+        real_route(session, update, *rest)     # creates the admin row...
         raise RuntimeError("crash after the write")  # ...which must then be rolled back
     monkeypatch.setattr(webhook, "route", route_then_crash)
     update = msg(ADMIN_ID, "/start")

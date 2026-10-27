@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.config import get_settings
 from app.core.logging import setup_logging
 from app.db.session import session_scope
+from app.jobs.routes import router as jobs_router
 from app.telegram.webhook import router as telegram_router
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="AI BOaT", lifespan=lifespan)
 app.include_router(telegram_router)
+app.include_router(jobs_router)
 
 
 @app.get("/health")

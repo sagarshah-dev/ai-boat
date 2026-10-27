@@ -37,6 +37,10 @@ def _in(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({', '.join(repr(v) for v in values)})"
 
 
+# 7-day "how did it go?" for a treatment: not asked yet, asked, answered, or "don't know".
+FOLLOW_UP = ("", "sent", "done", "skipped")
+
+
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING)
 
@@ -141,7 +145,7 @@ class JournalEntry(Base):
     __tablename__ = "journal_entries"
     __table_args__ = (
         CheckConstraint(_in("activity", ACTIVITIES), name="activity"),
-        CheckConstraint(_in("follow_up", ("", "sent", "done")), name="follow_up"),
+        CheckConstraint(_in("follow_up", FOLLOW_UP), name="follow_up"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

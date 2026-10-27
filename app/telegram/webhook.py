@@ -22,7 +22,9 @@ from app.services import members
 from app.integrations.gemini import LLM, GeminiLLM
 from app.services.members import Decision, DecisionOutcome, StartOutcome, TgUser
 from app.telegram import commands
-from app.telegram.client import Buttons, TelegramClient
+from app.core.replies import Buttons, Document, Email, Out, Photo, Reply
+from app.integrations.email import Mailer, SmtpSettings
+from app.telegram.client import TelegramClient
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,7 +54,45 @@ class AnswerButton:
     text: str | None = None
 
 
-Action = Send | Edit | AnswerButton
+@dataclass(frozen=True)
+class ClearButtons:
+    chat_id: int
+    message_id: int
+
+
+@dataclass(frozen=True)
+class SendDocument:
+    chat_id: int
+    document: Document
+
+
+@dataclass(frozen=True)
+class SendPhoto:
+    chat_id: int
+    photo: Photo
+
+
+@dataclass(frozen=True)
+class SendEmail:
+    chat_id: int
+    email: Email
+
+
+Action = Send | Edit | AnswerButton | ClearButtons | SendDocument | SendPhoto | SendEmail
+
+
+def to_actions(chat_id: int, outs: list[Out]) -> list[Action]:
+    actions: list[Action] = []
+    for o in outs:
+        if isinstance(o, Reply):
+            actions.append(Send(chat_id, o.text, o.buttons))
+        elif isinstance(o, Document):
+            actions.append(SendDocument(chat_id, o))
+        elif isinstance(o, Photo):
+            actions.append(SendPhoto(chat_id, o))
+        elif isinstance(o, Email):
+            actions.append(SendEmail(chat_id, o))
+    return actions
 
 
 @lru_cache
@@ -67,6 +107,12 @@ def get_llm() -> LLM:
                      fallback_model=s.gemini_fallback_model)
 
 
+@lru_cache
+def get_mailer() -> Mailer:
+    s = get_settings()
+    return Mailer(SmtpSettings(s.smtp_host, s.smtp_port, s.smtp_user, s.smtp_password, s.mail_from))
+
+
 @router.post("/telegram/webhook")
 def telegram_webhook(
     update: dict[str, Any] = Body(...),
@@ -74,18 +120,19 @@ def telegram_webhook(
     settings: Settings = Depends(get_settings),
     tg: TelegramClient = Depends(get_telegram),
     llm: LLM = Depends(get_llm),
+    mailer: Mailer = Depends(get_mailer),
 ) -> dict[str, bool]:
     # Constant-time compare: a plain == leaks how many leading characters were right.
     if not hmac.compare_digest((secret or "").encode(), settings.telegram_webhook_secret.encode()):
         raise HTTPException(status_code=401, detail="bad secret")
-    handle_update(update, tg, settings, llm)
+    handle_update(update, tg, settings, llm, mailer)
     # Always 200 for a genuine update, even after an internal error: a non-200 makes Telegram
     # retry the same update for hours and hold back every newer message behind it.
     return {"ok": True}
 
 
 def handle_update(update: dict[str, Any], tg: TelegramClient, settings: Settings,
-                  llm: LLM | None = None) -> None:
+                  llm: LLM | None = None, mailer: Mailer | None = None) -> None:
     """Shared by the webhook (Cloud Run) and scripts/dev_polling.py (local), so both behave alike."""
     update_id = update.get("update_id")
     if not isinstance(update_id, int):
@@ -102,8 +149,8 @@ def handle_update(update: dict[str, Any], tg: TelegramClient, settings: Settings
                 log.info("duplicate update skipped")
                 return
         with session_scope() as session:
-            actions = route(session, update, settings, llm or get_llm(), tg.send_typing)
-        deliver(tg, actions)
+            actions = route(session, update, settings, llm or get_llm(), tg)
+        deliver(tg, actions, mailer or get_mailer())
     except Exception:
         log.exception("update failed")
         if chat_id is not None:
@@ -120,7 +167,7 @@ def claim_update(session: Session, update_id: int) -> bool:
     return session.execute(stmt).first() is not None
 
 
-def deliver(tg: TelegramClient, actions: list[Action]) -> None:
+def deliver(tg: TelegramClient, actions: list[Action], mailer: Mailer | None = None) -> None:
     for action in actions:
         if isinstance(action, Send):
             tg.send_message(action.chat_id, action.text, action.buttons)
@@ -128,22 +175,43 @@ def deliver(tg: TelegramClient, actions: list[Action]) -> None:
             tg.edit_message_text(action.chat_id, action.message_id, action.text)
         elif isinstance(action, AnswerButton):
             tg.answer_callback(action.callback_id, action.text)
+        elif isinstance(action, ClearButtons):
+            tg.clear_buttons(action.chat_id, action.message_id)
+        elif isinstance(action, SendDocument):
+            d = action.document
+            tg.send_document(action.chat_id, d.filename, d.data, d.caption)
+        elif isinstance(action, SendPhoto):
+            tg.send_photo(action.chat_id, action.photo.file_id, action.photo.caption)
+        elif isinstance(action, SendEmail):
+            # After everything else and after commit: a slow mail server delays nothing, and
+            # its failure is reported instead of hidden.
+            ok = bool(mailer and mailer.send(action.email))
+            note = action.email.ok_note if ok else action.email.fail_note
+            if note:
+                tg.send_message(action.chat_id, note)
 
 
 # ── Routing ─────────────────────────────────────────────────────────────────────────────────
 
 def route(session: Session, update: dict[str, Any], settings: Settings, llm: LLM,
-          typing: commands.Typing | None = None) -> list[Action]:
+          tg: TelegramClient | None = None) -> list[Action]:
     if "callback_query" in update:
-        return _on_button(session, update["callback_query"], settings)
+        return _on_button(session, update["callback_query"], settings, llm, tg)
     message = update.get("message")
     if message and message.get("from"):
-        return _on_message(session, message, settings, llm, typing)
+        return _on_message(session, message, settings, llm, tg)
     return []  # edited messages, channel posts, etc. are not used yet
 
 
+def _env(session: Session, member, chat_id: int, settings: Settings, llm: LLM,
+         tg: TelegramClient | None) -> commands.Env:
+    return commands.Env(session=session, sender=member, chat_id=chat_id, settings=settings, llm=llm,
+                        typing=tg.send_typing if tg else None,
+                        fetch_file=tg.get_file_bytes if tg else None)
+
+
 def _on_message(session: Session, message: dict[str, Any], settings: Settings, llm: LLM,
-                typing: commands.Typing | None) -> list[Action]:
+                tg: TelegramClient | None) -> list[Action]:
     chat_id = message["chat"]["id"]
     user = _tg_user(message["from"])
     text = (message.get("text") or "").strip()
@@ -156,10 +224,18 @@ def _on_message(session: Session, message: dict[str, Any], settings: Settings, l
     if member is None:
         return [Send(chat_id, "🔒 You don't have access yet. Send /start to request it.")]
 
-    if not text:
-        return [Send(chat_id, commands.NOT_YET)] if (message.get("photo") or message.get("voice")) else []
-    return [Send(chat_id, reply)
-            for reply in commands.handle_text(session, member, chat_id, text, settings, llm, typing)]
+    env = _env(session, member, chat_id, settings, llm, tg)
+    caption = (message.get("caption") or "").strip()
+    if text:
+        return to_actions(chat_id, commands.handle_text(env, text))
+    if message.get("photo"):
+        # Telegram sends several sizes, smallest first: the last is the sharpest.
+        return to_actions(chat_id, commands.handle_photo(env, message["photo"][-1]["file_id"], caption))
+    if message.get("voice"):
+        v = message["voice"]
+        return to_actions(chat_id, commands.handle_voice(
+            env, v["file_id"], v.get("mime_type", "audio/ogg"), caption, int(v.get("duration") or 0)))
+    return []   # stickers, documents, locations: nothing to do
 
 
 def _on_start(session: Session, chat_id: int, user: TgUser, settings: Settings) -> list[Action]:
@@ -188,11 +264,37 @@ def _on_start(session: Session, chat_id: int, user: TgUser, settings: Settings) 
     ]
 
 
-def _on_button(session: Session, query: dict[str, Any], settings: Settings) -> list[Action]:
+def _on_button(session: Session, query: dict[str, Any], settings: Settings, llm: LLM,
+               tg: TelegramClient | None) -> list[Action]:
     callback_id = query["id"]
     data = query.get("data") or ""
-    parts = data.split(":")
-    if len(parts) != 3 or parts[0] != "join" or not parts[1].isdigit():
+    if data.startswith("join:"):
+        return _on_join_button(session, query)
+
+    # Every other button sends the same text a person could type ("yes", "2", "Mango"), so a
+    # tap and typing always do the same thing. It counts as the PRESSER's message: in a group,
+    # Biren tapping Sagar's Save finds nothing waiting for Biren, and Sagar keeps his buttons.
+    msg = query.get("message") or {}
+    chat_id = msg.get("chat", {}).get("id")
+    member = members.get_active(session, query["from"]["id"])
+    if member is None or chat_id is None:
+        return [AnswerButton(callback_id, "You don't have access to this bot.")]
+    outs = commands.handle_button(_env(session, member, chat_id, settings, llm, tg), data)
+    if not outs:
+        return [AnswerButton(callback_id, "This button is no longer valid.")]
+    if len(outs) == 1 and isinstance(outs[0], Reply) and outs[0].text == commands.NOTHING_WAITING:
+        return [AnswerButton(callback_id, "Nothing is waiting for you here.")]
+    actions: list[Action] = [AnswerButton(callback_id)]
+    # The /menu stays usable after a tap; every other button is spent once it worked.
+    if msg.get("message_id") and not data.startswith("menu:"):
+        actions.append(ClearButtons(chat_id, msg["message_id"]))
+    return actions + to_actions(chat_id, outs)
+
+
+def _on_join_button(session: Session, query: dict[str, Any]) -> list[Action]:
+    callback_id = query["id"]
+    parts = (query.get("data") or "").split(":")
+    if len(parts) != 3 or not parts[1].isdigit():
         return [AnswerButton(callback_id, "This button is no longer valid.")]
     try:
         decision = Decision(parts[2])

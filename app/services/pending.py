@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session
 from app.db.models import PendingAction
 
 AMOUNT = "amount"
+TIME = "time"              # a meeting waiting for its time (or am/pm, or a free slot)
 SETTLE_PIN = "settle_pin"
+CONFIRM = "confirm"        # a previewed change waiting for yes / no
+PLANT = "plant"            # a farm note waiting for which plant it is about
+GENERAL = "general"        # a farm search found nothing; the 💡 General advice button is live
+FARM_PHOTO = "farm_photo"  # a farm photo without a caption, waiting for its one line
+FARM_MODE = "farm_mode"    # 🌱 tapped in the menu: the next photo is a farm note
+ADVICE_MODE = "advice_mode"  # 📚 tapped in the menu: the next text / voice note is advice
 
 TTL = timedelta(minutes=2)
 
@@ -62,10 +69,10 @@ def pop(session: Session, chat_id: int, member_id: int,
 
 
 def put(session: Session, chat_id: int, member_id: int, kind: str, payload: dict,
-        attempts: int = 0) -> None:
-    """Create or replace — each new question restarts the 2-minute window."""
+        attempts: int = 0, ttl: timedelta = TTL) -> None:
+    """Create or replace — each new question restarts its window."""
     values = {"chat_id": chat_id, "member_id": member_id, "kind": kind, "payload": payload,
-              "attempts": attempts, "expires_at": _now() + TTL}
+              "attempts": attempts, "expires_at": _now() + ttl}
     stmt = pg_insert(PendingAction).values(**values).on_conflict_do_update(
         constraint="uq_pending_actions_chat_member_kind",
         set_={k: values[k] for k in ("payload", "attempts", "expires_at")})

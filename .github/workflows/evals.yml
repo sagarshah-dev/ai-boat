@@ -1,0 +1,70 @@
+# Runs the evals against the REAL Gemini models, on demand (they use the free-tier quota, so
+# never on every push). GitHub -> Actions -> "Evals" -> Run workflow. The report appears on the
+# run's Summary page.
+# Needs one repository secret: GEMINI_API_KEY (Settings -> Secrets and variables -> Actions).
+# The database is a throwaway Postgres container; nothing touches Neon or Telegram.
+name: Evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "chat, farm or both"
+        default: "both"
+      runs:
+        description: "Chat suite: runs per case (the model is not deterministic)"
+        default: "1"
+      delay:
+        description: "Seconds between messages (free-tier rate limit)"
+        default: "4"
+      only:
+        description: "Chat suite: comma-separated case ids (empty = all)"
+        default: ""
+      min_score:
+        description: "Farm suite: RAG_MIN_SCORE to test (empty = the default)"
+        default: ""
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: boat
+          POSTGRES_PASSWORD: boat
+          POSTGRES_DB: boat_eval
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U boat"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      EVAL_DATABASE_URL: postgresql://boat:boat@localhost:5432/boat_eval
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      EVAL_DELAY_S: ${{ inputs.delay }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Chat evals
+        if: inputs.suite != 'farm'
+        env:
+          EVAL_RUNS: ${{ inputs.runs }}
+          EVAL_ONLY: ${{ inputs.only }}
+        run: python evals/run_evals.py
+      - name: Farm RAG evals
+        if: inputs.suite != 'chat' && (success() || failure())
+        env:
+          RAG_MIN_SCORE: ${{ inputs.min_score }}
+        run: python evals/run_rag_evals.py
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: evals/*report.md
+          if-no-files-found: ignore

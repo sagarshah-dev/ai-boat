@@ -58,10 +58,30 @@ class LlmError(Exception):
 class Chat(Protocol):
     def send_user(self, text: str) -> Turn: ...
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn: ...
+    def send_media(self, text: str, data: bytes, mime_type: str) -> Turn: ...
 
 
 class LLM(Protocol):
+    embed_model: str
+
     def start(self, system: str, tools: list[ToolSpec], budget_s: float) -> Chat: ...
+
+    def complete(self, system: str, prompt: str, *, json_schema: dict | None = None,
+                 temperature: float = 0.1, budget_s: float = 30) -> str: ...
+
+    def embed(self, texts: list[str], task: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]: ...
+
+
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIM = 768          # the rag_chunks column is vector(768); changing it needs a migration
+EMBED_BATCH = 50
+
+
+def normalise(v: list[float]) -> list[float]:
+    """Gemini returns unit vectors only at full size; at 768 dims it does not, and comparing
+    un-normalised vectors makes long notes look "closer" than short ones for no reason."""
+    n = sum(x * x for x in v) ** 0.5 or 1.0
+    return [x / n for x in v]
 
 
 def error_kind(err: Exception) -> str:
@@ -92,7 +112,8 @@ def _declaration(spec: ToolSpec) -> types.FunctionDeclaration:
 
 class GeminiChat:
     def __init__(self, client: Any, models: list[str], system: str, tools: list[ToolSpec],
-                 budget_s: float, sleep=time.sleep, clock=time.monotonic):
+                 budget_s: float, sleep=time.sleep, clock=time.monotonic,
+                 json_schema: dict | None = None, temperature: float = 0.2):
         self._client = client
         self._models = models
         self._sleep, self._clock = sleep, clock
@@ -101,13 +122,22 @@ class GeminiChat:
         self._config = types.GenerateContentConfig(
             system_instruction=system,
             tools=[types.Tool(function_declarations=[_declaration(t) for t in tools])] if tools else None,
-            temperature=0.2,
+            temperature=temperature,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            # A fixed answer form (RAG): the model fills fields, code checks every one of them.
+            response_mime_type="application/json" if json_schema else None,
+            response_schema=types.Schema.model_validate(json_schema) if json_schema else None,
         )
         self.model_used: str = models[0]
 
     def send_user(self, text: str) -> Turn:
         self._contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+        return self._next()
+
+    def send_media(self, text: str, data: bytes, mime_type: str) -> Turn:
+        """An instruction plus a photo or voice note in one user turn."""
+        self._contents.append(types.Content(role="user", parts=[
+            types.Part.from_text(text=text), types.Part.from_bytes(data=data, mime_type=mime_type)]))
         return self._next()
 
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn:
@@ -169,8 +199,39 @@ class GeminiLLM:
                 api_key=self.api_key,
                 http_options=types.HttpOptions(timeout=CALL_TIMEOUT_S * 1000))
 
-    def start(self, system: str, tools: list[ToolSpec], budget_s: float) -> GeminiChat:
+    embed_model: str = EMBED_MODEL
+
+    def _models(self) -> list[str]:
         models = [self.model]
         if self.fallback_model and self.fallback_model != self.model:
             models.append(self.fallback_model)
-        return GeminiChat(self._client, models, system, tools, budget_s)
+        return models
+
+    def start(self, system: str, tools: list[ToolSpec], budget_s: float) -> GeminiChat:
+        return GeminiChat(self._client, self._models(), system, tools, budget_s)
+
+    def complete(self, system: str, prompt: str, *, json_schema: dict | None = None,
+                 temperature: float = 0.1, budget_s: float = 30) -> str:
+        """One question, one answer, same retry rules as the chat."""
+        chat = GeminiChat(self._client, self._models(), system, [], budget_s,
+                          json_schema=json_schema, temperature=temperature)
+        return chat.send_user(prompt).text
+
+    def embed(self, texts: list[str], task: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
+        """Texts -> unit vectors, batched. Retried only on temporary errors; anything else is an
+        LlmError and the caller decides what "not indexed yet" means."""
+        out: list[list[float]] = []
+        for i in range(0, len(texts), EMBED_BATCH):
+            batch = texts[i:i + EMBED_BATCH]
+            for attempt in range(len(RETRY_WAITS_S) + 1):
+                try:
+                    resp = self._client.models.embed_content(
+                        model=self.embed_model, contents=batch,
+                        config=types.EmbedContentConfig(task_type=task, output_dimensionality=EMBED_DIM))
+                    out.extend(normalise(list(e.values)) for e in resp.embeddings)
+                    break
+                except Exception as err:  # noqa: BLE001 — classified, re-raised as LlmError
+                    if not _retryable(err) or attempt == len(RETRY_WAITS_S):
+                        raise LlmError(error_kind(err), str(err)) from err
+                    time.sleep(RETRY_WAITS_S[attempt])
+        return out

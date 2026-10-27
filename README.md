@@ -29,12 +29,12 @@ about Telegram, so another channel (WhatsApp, a web page) can reuse the services
 |---|---|---|
 | Setup | Accounts, structure, schema, core (webhook, access, dedup, CI) | ✅ |
 | Feature 1 | Expenses (typed): add, balance, settle, undo, recent, search, filters | ✅ |
-| Feature 2 | Photo and voice expenses | next |
-| Feature 3 | PDF reports, email, scheduled jobs | |
-| Feature 4 | Meetings (Google Calendar) | |
-| Feature 5 | Farm journal + RAG | |
-| Feature 6 | AI evals in CI | |
-| Feature 7 | Cloud Run deploy | |
+| Feature 2 | Photo and voice expenses (preview, then yes) | ✅ |
+| Feature 3 | PDF reports, email, settle snapshot, daily job | ✅ |
+| Feature 4 | Meetings (Google Calendar, email invites) | ✅ |
+| Feature 5 | Farm journal + RAG search, follow-ups, /menu | ✅ |
+| Feature 6 | AI evals (real model) + production-like test run | ✅ |
+| Feature 7 | Cloud Run deploy | ✅ (continuous, from `main`) |
 
 ## Access
 
@@ -55,7 +55,23 @@ lines for several expenses. Ask in your own words: `hisab aapo`, `sagar no kharc
 | `undo` | removes your own last unsettled entry |
 | `sagar`, `fuel expenses` | every entry for a person or category, with total |
 | `search ...` | `search diesel after 1 oct` |
-| `settle` | asks for the PIN, then settles up |
+| `settle` | asks for the PIN, then settles up (PDF snapshot + email) |
+| `report [scope]` / `email [scope]` | PDF — `report fuel`, `report last month` |
+| `menu` | buttons: farm note, ask the farm, plant count, this week, balance, meetings |
+| `reindex` | rebuilds the farm search copy (normally done by the daily job) |
+
+**Photos and voice.** A photo of a bill or khata, or a voice note, is read by the AI and shown
+first; nothing is saved until **✅ Save**. A photo with a farm caption (`aamba na pan par daag`)
+becomes a farm note instead. A long voice note (1 min+) is offered as the farmer's advice.
+
+**Meetings.** `kale saanje 5 vagye meeting` — proposed, then booked on yes, with a Google
+Calendar entry and an email invite. "5 vagye" with no morning/evening is asked, never guessed.
+
+**Farm journal.** `aaje badha aamba ma neem spray, 50 ml, savare` is previewed with every field;
+a missing dose or time is asked once. Exact questions (`humic chhelle kyare aapyu?`,
+`ketla chhod che?`) are answered from the rows; experience questions (`pehla daag padya tyare shu
+karyu?`) are searched by meaning and answered with the notes they came from. A treatment gets a
+"how did it go?" after 7 days.
 
 Money is never worded by the AI: every reply carrying an amount comes from a fixed template, and
 an amount is saved only if it is written in the message (`tea by sagar` is asked, not guessed).
@@ -89,6 +105,12 @@ $env:TEST_DATABASE_URL="postgresql://..."   # a scratch database, NOT the bot's
 python -m pytest -q
 ```
 
+## Evals (real model)
+
+`tests/` script the model. `evals/` run the REAL Gemini models through the real webhook on a
+throwaway database, and grade outcomes in code. GitHub → Actions → **Evals** → Run workflow
+(needs the `GEMINI_API_KEY` repository secret). The number that must stay 0 is "wrong writes".
+
 ## Layout
 
 ```
@@ -97,12 +119,17 @@ app/
   config.py         settings from environment
   core/logging.py   JSON logs (Cloud Run severity + update_id on every line)
   db/               session.py (connection), models.py (tables)
-  telegram/         webhook.py (entry, access), commands.py (command words), client.py
-  ai/               agent.py (model loop + gates), guards.py (grounding rules), tools.py
-  services/         members, expenses, balance, settlements, pending (waiting questions)
-  integrations/     gemini.py (retries, fallback model, time budget)
+  telegram/         webhook.py (entry, access), commands.py (command words, photo, voice,
+                    buttons), farm_ui.py (menu, routing rules), client.py
+  ai/               agent.py (model loop + gates), guards.py, tools.py, proposals.py
+                    (preview -> yes), media.py (photo / voice), meeting_tools.py, farm_tools.py
+  services/         members, expenses, balance, settlements, pending, reports, mail,
+                    meetings, farm (journal, plants, advice), rag_index, rag (search + answer)
+  integrations/     gemini.py (retries, fallback, embeddings), email.py, calendar.py
+  jobs/             routes.py (POST /jobs/daily), farm_jobs.py (follow-ups, search sync)
 migrations/         Alembic schema versions
 scripts/            dev_polling.py (local), set_webhook.py (after deploy)
 tests/              pytest, real Postgres
+evals/              real-model evals (chat + farm RAG), run from GitHub Actions
 docs/decisions.md   why things are the way they are
 ```

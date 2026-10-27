@@ -32,6 +32,34 @@ class Settings(BaseSettings):
     # "Today" for expense dates. The server runs in UTC; the owners live in India.
     timezone: str = "Asia/Kolkata"
 
+    # Email (reports, settle snapshot, meeting invites). All empty = email switched off.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""
+    recipient_emails: str = ""          # comma-separated
+
+    # Protects the /jobs/* URLs that Cloud Scheduler calls. Empty = jobs switched off.
+    jobs_secret: str = ""
+    # Where scheduled messages (farm follow-ups, reports notice) go. 0 = the admin's chat.
+    notify_chat_id: int = 0
+
+    # Google Calendar for meetings. Empty = meetings are kept in the bot only.
+    calendar_id: str = ""
+    # Key of the service account the calendar is shared with (the JSON text itself).
+    google_service_account_json: str = ""
+
+    # Farm search: how close in meaning a note must be to count as found. Tuned by the eval run
+    # with the real embedding model (old bot: 0.62), never by feel.
+    rag_min_score: float = 0.62
+    # A voice note at least this long is treated as the farmer's advice, not a quick note.
+    knowledge_min_seconds: int = 60
+
+    @property
+    def recipients(self) -> tuple[str, ...]:
+        return tuple(e.strip() for e in self.recipient_emails.split(",") if e.strip())
+
 
 @lru_cache
 def get_settings() -> Settings:
