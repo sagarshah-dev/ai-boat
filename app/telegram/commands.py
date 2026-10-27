@@ -289,7 +289,7 @@ def _email(env: Env, cmd: str) -> list[Out]:
         # The old bot mailed an empty PDF here; "report" already said "no entries". Now both do.
         return [Reply(f"📧 No entries found for {scope.label} — nothing to email.")]
     return [Reply(f"📧 Emailing {scope.label} — {report.count} entries, ₹{inr(report.total)}…"),
-            mail.report_email(env.settings, report, "Expense Report")]
+            mail.report_email(env.settings, report, "Expense Report", pdf_in_chat=False)]
 
 
 def _filter(session: Session, lower: str) -> str | None:

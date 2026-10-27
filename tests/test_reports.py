@@ -126,11 +126,59 @@ def test_email_sends_after_reply_and_reports_success(bot):
     assert mail.to == ("a@x.com", "b@x.com") and mail.attachments[0][2] == "application/pdf"
 
 
-def test_email_failure_is_said_out_loud(bot):
+def test_email_failure_is_said_out_loud_and_the_pdf_really_comes(bot):
+    use_settings(**MAIL)
+    bot.mailer.ok = False
+    bot.mailer.last_error = "login refused — check SMTP_USER and SMTP_PASSWORD"
+    add_rows(("Sagar", 300, "seed"))
+    reply = bot.send(SAGAR, "email")
+    assert "could not be sent. The PDF is in this chat" in reply
+    assert "Reason: login refused" in reply
+    assert len(bot.tg.documents) == 1                 # the promise in the message is kept
+
+
+def test_email_success_does_not_also_send_the_pdf(bot):
+    use_settings(**MAIL)
+    add_rows(("Sagar", 300, "seed"))
+    bot.send(SAGAR, "email")
+    assert bot.mailer.sent and not bot.tg.documents
+
+
+def test_settle_email_failure_sends_the_pdf_once(bot):
     use_settings(**MAIL)
     bot.mailer.ok = False
     add_rows(("Sagar", 300, "seed"))
-    assert "could not be sent" in bot.send(SAGAR, "email")
+    bot.send(SAGAR, "settle")
+    reply = bot.send(SAGAR, "7777")
+    assert "could not be sent" in reply and len(bot.tg.documents) == 1   # snapshot, not twice
+
+
+@pytest.mark.parametrize("exc,words", [
+    ("auth", "SMTP_PASSWORD"), ("sender", "MAIL_FROM"), ("rcpt", "RECIPIENT_EMAILS"),
+    ("timeout", "SMTP_HOST"), ("refused", "SMTP_HOST"),
+])
+def test_email_failure_reason_names_the_setting_to_fix(exc, words):
+    import smtplib
+    from app.integrations.email import failure_reason
+    err = {"auth": smtplib.SMTPAuthenticationError(535, b"bad"),
+           "sender": smtplib.SMTPSenderRefused(553, b"no", "x@y"),
+           "rcpt": smtplib.SMTPRecipientsRefused({"a@b": (550, b"no")}),
+           "timeout": TimeoutError(), "refused": ConnectionRefusedError()}[exc]
+    assert words in failure_reason(err)
+
+
+def test_mailer_records_why_it_failed(monkeypatch):
+    import smtplib
+    from app.core.replies import Email
+    from app.integrations.email import Mailer, SmtpSettings
+
+    class Broken:
+        def __init__(self, *a, **kw):
+            raise smtplib.SMTPAuthenticationError(535, b"bad")
+    monkeypatch.setattr(smtplib, "SMTP", Broken)
+    m = Mailer(SmtpSettings("smtp.gmail.com", 587, "u", "p", "u@x.com"))
+    assert m.send(Email("s", "b", ("a@x.com",))) is False
+    assert "login refused" in m.last_error
 
 
 # ── settle snapshot ────────────────────────────────────────────────────────────────────────

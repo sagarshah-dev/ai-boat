@@ -286,6 +286,7 @@ class FakeMailer:
     def __init__(self):
         self.sent = []
         self.ok = True
+        self.last_error = ""
 
     @property
     def configured(self):
