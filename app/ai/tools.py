@@ -8,13 +8,14 @@ validates, because an enum is a strong hint, not a guarantee.
 from app.integrations.gemini import ToolSpec
 from app.services.expenses import CATEGORIES
 
-ADD_EXPENSE = "add_expense"
+ADD_EXPENSES = "add_expenses"   # what the model calls: one call, every expense in the message
+ADD_EXPENSE = "add_expense"     # one item of it, as the agent runs and checks it
 GET_BALANCES = "get_balances"
 GET_RECENT = "get_recent"
 SEARCH_EXPENSES = "search_expenses"
 DELETE_LAST_EXPENSE = "delete_last_expense"
 
-WRITE_TOOLS = {ADD_EXPENSE, DELETE_LAST_EXPENSE}
+WRITE_TOOLS = {ADD_EXPENSE, ADD_EXPENSES, DELETE_LAST_EXPENSE}
 
 
 def _s(type_: str, description: str = "", **extra) -> dict:
@@ -28,21 +29,34 @@ def _s(type_: str, description: str = "", **extra) -> dict:
 def expense_tools(payers: list[str]) -> list[ToolSpec]:
     names = ", ".join(payers)
     return [
+        # ONE call with a list, not one call per expense. Live (29-10-2026) the small model made
+        # 1 call for "150 tea, 250 vadapav, 500 sevsad" and stopped; whether a model makes
+        # parallel calls is up to the model, while an array is part of the schema.
         ToolSpec(
-            name=ADD_EXPENSE,
-            description="Add a new expense. Use whenever the user mentions an amount spent or paid.",
+            name=ADD_EXPENSES,
+            description="Add new expenses. Use whenever the user mentions money spent or paid. "
+                        "Put EVERY expense of the message in `items`, one item per amount, in "
+                        "the order written. Example: '150 tea, 250 vadapav by lalo, coffee' -> "
+                        "items: [{150, tea}, {250, vadapav, Lalo}, {0, coffee}]. An item with no "
+                        "amount written gets amount 0 — the system asks for it.",
             parameters=_s("OBJECT", properties={
-                "amount": _s("NUMBER", "Amount in rupees, exactly as written in the message. "
-                                       "Never guess. Use 0 if the message has no amount."),
-                "description": _s("STRING", "What the expense was for"),
-                "paid_by": _s("STRING", f"Who paid. Exactly one of: {names}. "
-                                        "If not mentioned, use the sender's name.", enum=payers),
-                "category": _s("STRING", f"One of: {', '.join(CATEGORIES)}. Infer from context.",
-                               enum=list(CATEGORIES)),
-                "merchant": _s("STRING", "Who was paid — vendor or shop. Empty if not mentioned."),
-                "date": _s("STRING", "Date as DD-MM-YYYY if the message mentions one ('yesterday', "
-                                     "'on the 5th'). Empty if not mentioned."),
-            }, required=["amount", "description", "paid_by"]),
+                "items": _s("ARRAY", "Every expense in the message, one per amount.",
+                            items=_s("OBJECT", properties={
+                                "amount": _s("NUMBER", "Amount in rupees, exactly as written for "
+                                                       "THIS item. Never guess. 0 if not written."),
+                                "description": _s("STRING", "What this item was for"),
+                                "paid_by": _s("STRING", f"Who paid. Exactly one of: {names}. If "
+                                                        "not mentioned, use the sender's name.",
+                                              enum=payers),
+                                "category": _s("STRING", f"One of: {', '.join(CATEGORIES)}. "
+                                                         "Infer from context.",
+                                               enum=list(CATEGORIES)),
+                                "merchant": _s("STRING", "Who was paid — vendor or shop. Empty if "
+                                                         "not mentioned."),
+                                "date": _s("STRING", "DD-MM-YYYY if the message mentions one "
+                                                     "('yesterday', 'on the 5th'). Empty if not."),
+                            }, required=["amount", "description", "paid_by"])),
+            }, required=["items"]),
         ),
         ToolSpec(
             name=GET_BALANCES,

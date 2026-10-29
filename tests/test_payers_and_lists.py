@@ -160,7 +160,7 @@ def test_item_without_amount_is_reported(nick):
                           add(0, "coffee")))
     reply = nick.send(SAGAR, "150 tea, 250 vadapav, 500 sevsad, coffee all by sagar")
     assert len(payers()) == 3
-    assert "No amount for coffee, so it was not saved" in reply
+    assert "No amount for coffee. How much was it?" in reply
 
 
 # ── B1. "500 sevsad, coffee": together or forgotten? ────────────────────────────────────────

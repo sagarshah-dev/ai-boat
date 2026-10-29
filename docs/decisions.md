@@ -194,6 +194,20 @@ payer case.
 **Cost:** a seeded payer has no Telegram ID until they /start (linked on approval as Owner).
 Names written another way ("bakabhai") are asked about instead of guessed.
 
+## 24. One add_expenses call with an array, not one call per expense
+
+**Chosen:** the model gets one tool, `add_expenses(items=[...])`. The agent expands it into one
+`add_expense` run per item, so every item passes the same gates in its own savepoint, and the
+result goes back to the model as one response per call. If parts of the list are still missing,
+the agent asks once more with the fallback (stronger) model, then tells the user. An item with
+no amount waits in `pending_actions` like "tea by sagar", so a plain "50" completes it for the
+right payer. Each model round is logged (tool, amount, payer, result).
+**Why:** live, 29-10-2026, the small model made one call for a three-item list and stopped,
+even after a retry. Whether a model makes parallel calls is up to the model; an array is part
+of the schema. Same function-calling pattern — no second parser in code.
+**Cost:** the model can still send fewer items than written, so the code check of the list
+stays. A few more tokens per call for the larger schema.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

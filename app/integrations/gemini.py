@@ -140,6 +140,12 @@ class GeminiChat:
             types.Part.from_text(text=text), types.Part.from_bytes(data=data, mime_type=mime_type)]))
         return self._next()
 
+    def escalate(self) -> None:
+        """From the next call on, ask the fallback (stronger) model first. Used when the main
+        model's answer was incomplete, not failed: retrying the same model rarely changes it."""
+        if len(self._models) > 1:
+            self._models = self._models[1:] + self._models[:1]
+
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn:
         parts = [types.Part.from_function_response(
             # Round-trip through JSON so Decimal / date values become plain JSON for the API.
