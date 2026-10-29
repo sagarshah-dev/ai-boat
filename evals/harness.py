@@ -18,6 +18,9 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
 PEOPLE = {"Sagar": (1001, "admin"), "Biren": (2001, "owner"), "Lalo": (3001, "owner")}
+# Same nicknames production gets from migration 0003.
+ALIASES = {"Sagar": ["sagar", "સાગર"], "Biren": ["biren", "bako", "બિરેન", "બકો"],
+           "Lalo": ["lalo", "jignesh", "લાલો", "જીગ્નેશ"]}
 CHAT = -100500            # one group chat: Biren's "200" must never complete Sagar's "tea"
 SECRET = "eval-secret-0123456789"
 _ids = itertools.count(1)
@@ -126,7 +129,8 @@ def reset(keep_plants: bool = True) -> dict:
         conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
     with session_scope() as s:
         for name, (tid, role) in PEOPLE.items():
-            s.add(Member(telegram_user_id=tid, name=name, role=role, status="active"))
+            s.add(Member(telegram_user_id=tid, name=name, role=role, status="active",
+                         aliases=ALIASES[name]))
         s.flush()
         return {m.name: m.id for m in s.query(Member)}
 

@@ -62,8 +62,12 @@ class Member(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    # NULL = a fixed payer who has not used the bot (yet). Such a row shares expenses but can
+    # never log in: access is looked up BY Telegram ID (migration 0003).
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     name: Mapped[str] = mapped_column(Text)
+    # Other names people type for this person: "jignesh" is Lalo, "bako" is Biren.
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")
     telegram_username: Mapped[str | None] = mapped_column(Text)
     # Only admin and owner share expenses; a guest uses every feature but is never in the split.
     role: Mapped[str] = mapped_column(Text, server_default="guest")

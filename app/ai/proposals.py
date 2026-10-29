@@ -129,6 +129,46 @@ def _undo_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
     return [Reply(undo_text(undone))]
 
 
+# ── One amount, two items: "150 tea, 250 vadapav, 500 sevsad, coffee" ──────────────────────
+# Is ₹500 sevsad AND coffee, or was coffee's amount forgotten? Both are real. Money is never
+# guessed, so the user taps: 1 = together, 2 = only the first item; the bot then asks coffee's.
+
+def joined_proposal(item: dict, own: list[str], extra: list[str]) -> dict:
+    return {"kind": "joined", "item": item, "own": own, "extra": extra,
+            "choices": [{"line": "both"}, {"line": "separate"}]}
+
+
+def _joined_preview(p: dict) -> str:
+    it, own, extra = p["item"], ", ".join(p["own"]), ", ".join(p["extra"])
+    amt = inr(Decimal(it["amount"]))
+    return (f"❓ Is ₹{amt} for both {own} and {extra}?\n"
+            f"1. Yes, together: ₹{amt} — {it['description']} — {it['paid_by']}\n"
+            f"2. No, ₹{amt} is only {own} — then I ask the amount for {extra}\n\n"
+            "Tap 1 or 2, or ❌ Cancel.")
+
+
+def _joined_buttons(p: dict) -> Buttons:
+    return [[("1 Together", "1"), (f"2 {', '.join(p['extra'])} separate"[:30], "2")],
+            [("❌ Cancel", "no")]]
+
+
+def _joined_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
+    it = dict(p["item"])
+    if pick == 1:
+        it["description"] = " ".join(p["own"])
+    out = _expenses_apply(ctx, expenses_proposal([it], "text"), None)
+    if pick == 1:
+        payer = it["paid_by"].split()[0]
+        extra = " ".join(p["extra"])
+        # Same "how much?" memory as "tea by sagar": the next "300" completes it.
+        pending.put(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT,
+                    {"message": f"{extra} by {payer}", "tries_left": 3})
+        out.append(Reply(f"📝 \"{extra}\" — how much was it?\nSend just the amount, e.g. 100 "
+                         "(within 2 minutes)."))
+    return out
+
+
 register("expenses", Kind(preview=_expenses_preview, apply=_expenses_apply))
+register("joined", Kind(preview=_joined_preview, apply=_joined_apply, buttons=_joined_buttons))
 register("undo", Kind(preview=_undo_preview, apply=_undo_apply,
                       buttons=lambda p: yes_no("✅ Delete")))
