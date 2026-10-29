@@ -88,7 +88,8 @@ class ToolRun:
     def needs(self) -> str | None:
         """Which missing piece the CODE asks the user for (not the model): amount, description,
         time, ampm, new_time (slot taken), datetime (both day and time missing)."""
-        for key in ("amount", "description", "time", "ampm", "new_time", "datetime", "plant"):
+        for key in ("amount", "description", "payer", "time", "ampm", "new_time", "datetime",
+                    "plant"):
             if self.result.get(f"needs_{key}"):
                 return key
         return None
@@ -132,6 +133,9 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     extras = [o for r in runs if r.ok for o in r.result.get("outs", [])]
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
              and "expense" in r.result]
+    # Whatever the model did, the user hears about every part of the message that did NOT
+    # become an entry (live bug: 4 expenses typed, 1 saved, no warning).
+    reply = "\n\n".join(p for p in (reply, list_notes(ctx, message, runs)) if p)
     if batch:
         return Outcome(reply, added, runs, llm_error=llm_error, extras=extras)
 
@@ -223,19 +227,32 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | No
     try:
         chat = ctx.llm.start(system_prompt(ctx), all_tools(ctx), LLM_BUDGET_S)
         turn = chat.send_user(message)
+        nudged = False
         for round_no in range(1, MAX_ROUNDS + 1):
             if not turn.calls:
+                if nudged:   # it had nothing to add: keep the fixed templates, list_notes warns
+                    return runs, _templates(runs) or turn.text or "", None
                 return runs, turn.text or "Sorry, I couldn't complete that. Please try again.", None
             round_runs = [_run_tool(ctx, call, message, done_writes) for call in turn.calls]
             runs += round_runs
             needs_model = any(r.name in NEEDS_MODEL and r.ok for r in round_runs)
-            if not _unresolved_errors(runs) and not needs_model:
+            left = [] if nudged else unsaved_parts(ctx, message, runs)
+            if not _unresolved_errors(runs) and not needs_model and not left:
                 # Everything left is a template or a missing field the code asks about itself:
                 # no second model call — cheaper, faster, and the numbers can't be reworded.
                 return runs, _templates(runs), None
             if round_no == MAX_ROUNDS:
                 break   # don't pay for a model answer we would not use
-            turn = chat.send_tool_results([(r.name, _for_model(r.result)) for r in round_runs])
+            results = [(r.name, _for_model(r.result)) for r in round_runs]
+            if left:
+                # The model added fewer entries than the message lists. Ask it once for the rest;
+                # if it still skips them, list_notes tells the user (never a silent drop).
+                nudged = True
+                name, last = results[-1]
+                results[-1] = (name, {**last, "not_saved_yet": left,
+                                      "note": "These parts of the message were not added. Call "
+                                              "add_expense once for each of them."})
+            turn = chat.send_tool_results(results)
         log.warning("tool loop hit the round limit")
         return runs, _templates(runs) or "Sorry, I couldn't complete that. Please try again.", None
     except LlmError as err:
@@ -348,14 +365,21 @@ def _add_expense(ctx: Context, args: dict, message: str) -> dict:
     if expense_date is None:
         return {"error": f"date '{raw_date}' is not DD-MM-YYYY. Call again with a valid date."}
 
-    payer = (members.match_name(ctx.people, args.get("paid_by"))
-             or members.match_name(ctx.people, ctx.sender.name))
+    payer, why = resolve_payer(ctx, args, message, amount)
     if payer is None:
-        names = ", ".join(m.name for m in ctx.people)
-        return {"error": f"Unknown payer. Nothing was saved. Ask the user who paid: {names}."}
+        return {"error": f"{why} Nothing was saved; the system asks the user who paid.",
+                "needs_payer": True, "why": why, "amount": amount, "description": description}
 
     category = str(args.get("category") or "")
     merchant = str(args.get("merchant") or "")
+    joined = _joined_items(ctx, message, amount, description)
+    if joined:
+        # "500 sevsad, coffee": is ₹500 both, or was coffee's amount forgotten? Money is never
+        # guessed — one tap decides.
+        item = proposals.expense_item(amount=amount, description=description, paid_by=payer,
+                                      category=category, merchant=merchant, on=expense_date)
+        return {"proposal": proposals.joined_proposal(item, *joined), "amount": amount,
+                "paid_by": payer.name}
     if ctx.confirm_writes:
         return {"proposal": proposals.expenses_proposal([proposals.expense_item(
             amount=amount, description=description, paid_by=payer, category=category,
@@ -365,6 +389,118 @@ def _add_expense(ctx: Context, args: dict, message: str) -> dict:
                         category=category, merchant=merchant)
     return {"expense": view, "text_reply": added_text(view), "id": view.id, "amount": view.amount,
             "paid_by": view.paid_by, "date": fmt_date(view.date)}
+
+
+def resolve_payer(ctx: Context, args: dict, message: str,
+                  amount: Decimal) -> tuple[Member | None, str]:
+    """Who paid, decided from the USER's words. Returns (member, "") or (None, reason).
+
+    The model's paid_by is an enum of members, so it can only ever answer with a member: when
+    the named person was missing ("by lalo" before Lalo was a payer) it quietly picked the
+    sender. So the code reads the names in the message itself and only falls back to the sender
+    when nobody at all was named."""
+    names = ", ".join(m.name for m in ctx.people)
+    stranger = guards.unknown_payer_word(message, ctx.people_words)
+    if stranger:
+        return None, f"'{stranger}' does not share expenses (only {names})."
+    toks = members.tokens(message)
+    named = members.mentioned(ctx.people, message)
+    for m in named:
+        words = {a.lower() for a in (m.aliases or [])} | set(m.name.lower().split()[:1])
+        # "lalo ne 500 aapya" = gave 500 TO Lalo. Who paid is unclear.
+        if any(t in words and nxt == "ne" for t, nxt in zip(toks, toks[1:])) or any(
+                t == w + "ને" for t in toks for w in words):
+            return None, f"'{m.name} ne' could mean money given TO {m.name}."
+    if len(named) == 1:
+        return named[0], ""
+    if len(named) > 1:
+        # "tea 150 by sagar, vadapav 250 by biren": the name in this amount's own part decides.
+        part = guards.amount_segment(amount, message) or ""
+        here = members.mentioned(named, part)
+        if len(here) == 1:
+            return here[0], ""
+        return None, f"More than one person is named ({', '.join(m.name for m in named)})."
+    sender = members.match_name(ctx.people, ctx.sender.name)
+    by_model = members.match_name(ctx.people, args.get("paid_by"))
+    if by_model is not None and by_model is not sender:
+        # Nobody is named in the message, yet the model chose someone else: a guess.
+        return None, "The message does not say who paid."
+    if sender is None:
+        return None, f"The sender ({ctx.sender.name}) does not share expenses."
+    return sender, ""
+
+
+def _joined_items(ctx: Context, message: str, amount: Decimal,
+                  description: str) -> tuple[list[str], list[str]] | None:
+    """(own words, other words) when the model put an amount-less item from the list into this
+    entry: "500 sevsad, coffee" -> (["sevsad"], ["coffee"]). None when nothing was joined."""
+    loose = guards.amountless_items(message, ctx.people_words)
+    if not loose:
+        return None
+    desc = set(guards.item_words(description, ctx.people_words))
+    extra = [w for w in loose if w in desc]
+    own = [w for w in guards.item_words(guards.amount_segment(amount, message) or "",
+                                        ctx.people_words) if w in desc and w not in extra]
+    return (own, extra) if extra and own else None
+
+
+def unsaved_parts(ctx: Context, message: str, runs: list[ToolRun]) -> list[str]:
+    """The comma-parts of a list that have an amount but did not become an entry (or a proposal,
+    or a question to the user). Each handled amount covers one part, so "100 tea, 100 coffee"
+    with one entry still shows "100 coffee"."""
+    parts = guards.segments(message)
+    adds = [r for r in runs if r.name == tools.ADD_EXPENSE]
+    if len(parts) < 2 or not adds or guards.ARITHMETIC.search(message):
+        return []
+    handled = [Decimal(str(r.result["amount"])) for r in adds
+               if r.result.get("amount") is not None
+               and (r.ok or r.result.get("needs_payer") or r.result.get("needs_description"))]
+    left = []
+    for part in parts:
+        nums = guards.numbers_in(part)
+        if not nums or re.search(r"\btotal\b", part, re.IGNORECASE):
+            continue
+        hit = next((h for h in handled if any(abs(h - n) < Decimal("0.005") for n in nums)), None)
+        if hit is None:
+            left.append(part)
+        else:
+            handled.remove(hit)
+    return left
+
+
+def list_notes(ctx: Context, message: str, runs: list[ToolRun]) -> str:
+    """Code-written lines for everything in the message that was not saved: a payer the code
+    could not be sure of, a listed amount that never became an entry, an item with no amount."""
+    notes = []
+    for r in runs:
+        if r.name == tools.ADD_EXPENSE and r.result.get("needs_payer"):
+            first = ctx.people[0].name.split()[0].lower() if ctx.people else "sagar"
+            notes.append(f"❌ Not saved: ₹{inr(r.result['amount'])} {r.result['description']} — "
+                         f"who paid? {r.result['why']}\nSend it again with the name, e.g. "
+                         f"\"{inr(r.result['amount'])} {r.result['description']} by {first}\".")
+    if not any(r.name == tools.ADD_EXPENSE for r in runs):
+        return "\n\n".join(notes)
+    left = unsaved_parts(ctx, message, runs)
+    if left:
+        notes.append("⚠️ Not saved: " + ", ".join(f"\"{p}\"" for p in left)
+                     + "\nPlease send " + ("it" if len(left) == 1 else "them") + " again.")
+    taken = set()
+    for r in runs:
+        if r.name != tools.ADD_EXPENSE or not r.ok:
+            continue
+        p = r.result.get("proposal") or {}
+        descs = [it["description"] for it in p.get("items", [])] + (
+            [p["item"]["description"]] if p.get("item") else [])
+        if r.result.get("expense"):
+            descs.append(r.result["expense"].description)
+        for d in descs:
+            taken |= set(guards.item_words(d, ctx.people_words))
+    loose = [w for w in guards.amountless_items(message, ctx.people_words) if w not in taken]
+    if loose:
+        what = ", ".join(loose)
+        notes.append(f"❌ No amount for {what}, so it was not saved.\nSend it with the amount, "
+                     f"e.g. \"{loose[0]} 100\".")
+    return "\n\n".join(notes)
 
 
 def _search(ctx: Context, args: dict) -> dict:

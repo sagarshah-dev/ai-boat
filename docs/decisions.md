@@ -178,6 +178,22 @@ Actions workflow runs it on demand; the one number that must stay 0 is "wrong wr
 **Why:** unit tests script the model, so they prove the checks work IF the model does X. Evals
 prove what it does. Not on every push: it uses the free-tier quota.
 
+## 23. The payer is read from the user's words; the three owners are seeded
+
+**Chosen:** Sagar, Lalo (jignesh) and Biren (bako) are seeded as payers by migration 0003, with
+aliases. The agent decides `paid_by` from the names written in the message
+(`agent.resolve_payer`), not from the model's argument. A name that is not a payer, a typo,
+"lalo ne" (given TO Lalo) or two names for one amount -> nothing saved, the user is asked.
+After the model's tool calls, code compares them with the message's comma-parts
+(`agent.unsaved_parts`): missing parts get one more model round, then a "Not saved" line; an
+item with no amount is reported; "500 sevsad, coffee" becomes a one-tap "together or separate?".
+**Why:** live bug, 28/29-10-2026: "… all by lalo" saved 1 of 4 entries, all as Sagar, with no
+warning. The model's `paid_by` is an enum of members; when the named person was not in it, it
+picked the sender, and the old fallback to the sender hid that. 117 evals had no list + other
+payer case.
+**Cost:** a seeded payer has no Telegram ID until they /start (linked on approval as Owner).
+Names written another way ("bakabhai") are asked about instead of guessed.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

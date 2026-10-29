@@ -185,9 +185,10 @@ def test_bare_yes_with_nothing_waiting_never_reaches_model(bot):
 # ── Payer rules ────────────────────────────────────────────────────────────────────────────
 
 def test_guest_entry_must_name_a_sharing_payer(bot):
-    bot.llm.script(add(100, "tea", paid_by=""), say("Who paid — Sagar, Biren or Lalo?"))
+    # The code asks, not the model: no second model call, and the question is always the same.
+    bot.llm.script(add(100, "tea", paid_by=""))
     reply = bot.send(RAMESH, "100 tea")
-    assert expenses_in_db() == [] and reply == "Who paid — Sagar, Biren or Lalo?"
+    assert expenses_in_db() == [] and "who paid?" in reply and "Ramesh" in reply
     assert "guest" in bot.llm.last.system
 
 

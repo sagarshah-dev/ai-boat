@@ -90,3 +90,65 @@ TIME_ONLY = re.compile(r"^\s*(?:" + _TIME_WORDS + r")?\s*\d{1,2}(?:[:.]\d{2})?\s
                        r"(?:am|pm|a\.m\.|p\.m\.|" + _TIME_WORDS + r")?\s*$", re.IGNORECASE)
 DAYPART_ONLY = re.compile(r"^\s*(am|pm|morning|evening|afternoon|night|savare|saware|saanje|sanje|"
                           r"bapore|ratre|સવારે|સાંજે|બપોરે|રાત્રે)\s*$", re.IGNORECASE)
+
+
+# ── Lists of expenses in one message ────────────────────────────────────────────────────────
+# Live bug (28/29-10-2026): "150 tea, 250 vadapav, 500 sevsad, coffee 300 all by lalo" saved ONE
+# entry and nobody was told about the other three; "..., coffee all by sagar" saved
+# "sevsad, coffee" ₹500. The model's calls are checked one by one, so the checks below look at
+# the whole message: which parts became an entry, and which did not.
+
+# A comma between two digits is digit grouping ("1,12,412"), not a list.
+_SEGMENT = re.compile(r"[;\n]+|(?<!\d),|,(?!\d)")
+_LIST_FILLER = _FILLER | {"all", "badha", "badhu", "both", "banne", "ane", "aur", "by", "paid",
+                          "e", "ae", "che", "hata", "hatu", "ka", "ki", "ke"}
+# "by card" / "by upi" is HOW it was paid, not WHO.
+_PAY_METHODS = {"card", "cash", "upi", "gpay", "phonepe", "paytm", "online", "cheque", "check",
+                "bank", "me", "myself", "self", "mi"}
+_BY_WORD = re.compile(r"\bby\s+([^\W\d_]+)", re.IGNORECASE)
+
+
+def segments(text: str) -> list[str]:
+    """"150 tea, 250 vadapav; coffee" -> ["150 tea", "250 vadapav", "coffee"]. Only commas,
+    semicolons and new lines split: "tea and nasta 200" is one bill, one entry."""
+    return [s.strip() for s in _SEGMENT.split(str(text or "")) if s.strip()]
+
+
+def item_words(text: str, people_words: set[str]) -> list[str]:
+    """The words that name things ("coffee"), without amounts, names and filler."""
+    out = []
+    for w in re.findall(r"[^\W\d_]+", str(text or "")):
+        lw = w.lower()
+        if lw in _LIST_FILLER or lw in people_words or lw in _PAY_METHODS:
+            continue
+        if len(w) >= 2 or not w.isascii():
+            out.append(lw)
+    return out
+
+
+def unknown_payer_word(text: str, people_words: set[str]) -> str | None:
+    """"500 diesel by bhavesh" -> "bhavesh": someone was named who does not share expenses.
+    The model can only answer with a member, so it would quietly pick one — the sender."""
+    for word in _BY_WORD.findall(str(text or "")):
+        lw = word.lower()
+        if lw not in people_words and lw not in _PAY_METHODS and lw not in ("all", "the"):
+            return word
+    return None
+
+
+def amount_segment(amount: Decimal, text: str) -> str | None:
+    """The comma-part of the message where this amount is written."""
+    return next((s for s in segments(text) if amount_in_text(amount, s)), None)
+
+
+def amountless_items(text: str, people_words: set[str]) -> list[str]:
+    """In a list like "150 tea, 250 vadapav, coffee", the parts that name an item but no amount
+    ("coffee"). A single phrase ("tea and nasta 200") never counts: it is one entry."""
+    parts = segments(text)
+    if len(parts) < 2 or not any(numbers_in(p) for p in parts):
+        return []
+    out = []
+    for p in parts:
+        if not numbers_in(p):
+            out += item_words(p, people_words)
+    return out

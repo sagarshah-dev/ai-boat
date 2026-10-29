@@ -42,8 +42,10 @@ def test_right_write_passes(ev):
 
 
 def test_wrong_write_is_flagged(ev):
+    # No name in the message -> the sender pays; the case expected Biren -> a wrong write.
+    # (A wrong paid_by from the model is now corrected by code, so it can't be the example.)
     ev[3].script(call("add_expense", amount=500, description="diesel", paid_by="Sagar", category="Fuel"))
-    ok, wrong, problems = run(ev, case([("Sagar", "500 diesel by biren")],
+    ok, wrong, problems = run(ev, case([("Sagar", "500 diesel")],
                                        saved=[{"amount": 500, "paid_by": "Biren"}]))
     assert not ok and wrong and "WRONG WRITE" in problems[0]
 
