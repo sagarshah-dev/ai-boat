@@ -123,7 +123,7 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     is_slot = bool(waiting) and _is_slot_reply(ctx, waiting, user_text)
     # "tea by sagar" (waiting) + "100" -> "tea by sagar 100", then the normal path: every gate
     # applies to the glued text exactly as if it had been typed in one go.
-    message = _glue(waiting, user_text) if is_slot else user_text
+    message = _glue(waiting, user_text, ctx.people_words) if is_slot else user_text
     if is_slot and waiting.kind == pending.PLANT:
         # The note's photo and source travel with the question "which plant?".
         ctx.photo = ctx.photo or waiting.payload.get("photo", "")
@@ -179,10 +179,12 @@ def _is_item_amount_reply(ctx: Context, waiting: pending.Pending, text: str) -> 
             and not members.mentioned(ctx.people, text))
 
 
-def _glue(waiting: pending.Pending, reply: str) -> str:
+def _glue(waiting: pending.Pending, reply: str, people_words: set[str]) -> str:
     original = waiting.payload["message"]
     mode = waiting.payload.get("mode", "add")
-    if waiting.kind == pending.AMOUNT and guards.item_words(reply, set()):
+    # People's names are not items: "100 by biren" keeps its payer (eval 29-10 caught the
+    # names being dropped, so Biren's 100 became the sender's).
+    if waiting.kind == pending.AMOUNT and guards.item_words(reply, people_words):
         # "coffee 50": only the amount is new; the item and the payer are already in `original`.
         return f"{original} {guards.numbers_in(reply)[0].normalize():f}"
     if mode == "ampm":

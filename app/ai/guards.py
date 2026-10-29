@@ -136,9 +136,18 @@ def unknown_payer_word(text: str, people_words: set[str]) -> str | None:
     return None
 
 
+_JOINER = re.compile(r"\s+(?:and|ane|aur|tatha|&)\s+", re.IGNORECASE)
+
+
 def amount_segment(amount: Decimal, text: str) -> str | None:
-    """The comma-part of the message where this amount is written."""
-    return next((s for s in segments(text) if amount_in_text(amount, s)), None)
+    """The part of the message where this amount is written: its comma-part, and inside that
+    the clause between "and"/"ane" when the part holds more than one amount ("200 tea by sagar
+    and 500 diesel by biren"). Only for finding THIS amount's payer — "tea and nasta 200" is
+    still one entry, because a part with one amount is never split."""
+    part = next((s for s in segments(text) if amount_in_text(amount, s)), None)
+    if part is None or len(numbers_in(part)) < 2:
+        return part
+    return next((c for c in _JOINER.split(part) if amount_in_text(amount, c)), part)
 
 
 def amountless_items(text: str, people_words: set[str]) -> list[str]:

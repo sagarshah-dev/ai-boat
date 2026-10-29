@@ -77,3 +77,19 @@ def test_rag_seed_keeps_note_ids_and_indexes(ev):
         s.add(e)
         s.flush()
         assert e.id == 13
+
+
+def test_may_save_is_neither_wrong_nor_missed(ev):
+    ev[3].script(call("add_expenses", items=[
+        {"amount": 150, "description": "tea", "paid_by": "Sagar"},
+        {"amount": 500, "description": "sevsad", "paid_by": "Sagar"}]))
+    c = case([("Sagar", "150 tea, 500 sevsad")], saved=[{"amount": 150, "paid_by": "Sagar"}],
+             may_save=[{"amount": 500, "paid_by": "Sagar"}])
+    assert run(ev, c) == (True, False, [])
+
+
+def test_failed_run_lists_what_the_model_called(ev):
+    ev[3].script(call("add_expenses", items=[{"amount": 500, "description": "diesel",
+                                              "paid_by": "Sagar"}]))
+    ok, wrong, problems = run(ev, case([("Sagar", "500 diesel")], saved=[]))
+    assert not ok and wrong and problems[-1] == "model: add_expenses[500 diesel/Sagar]"
