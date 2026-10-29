@@ -8,7 +8,7 @@
 {"id": "counts", "text": "ketla aamba jivant che?", "tool": "get_plant_counts"}
 {"id": "search-meaning", "text": "pehla fungus aavi tyare shu karyu hatu?", "tool": "search_farm_notes"}
 {"id": "search-advice", "text": "nava chhod ne paani ketlu aapvu?", "tool": "search_farm_notes"}
-{"id": "expense-not-farm", "text": "500 diesel by biren", "tool": "add_expense"}
+{"id": "expense-not-farm", "text": "500 diesel by biren", "tool": "add_expenses"}
 {"id": "meeting-not-farm", "text": "kale saanje 5 vagye meeting", "tool": "schedule_meeting"}
 {"id": "real-ask-method", "text": "udhai treatment kevi rite karyu hatu?", "tool": "search_farm_notes"}
 {"id": "real-ask-when", "text": "udhai treatment kyare karyu last time", "tool": "get_farm_activities"}

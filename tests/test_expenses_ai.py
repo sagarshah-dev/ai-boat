@@ -202,8 +202,9 @@ def test_guest_can_add_for_an_owner(bot):
 def test_payer_choices_given_to_model_are_only_sharing_members(bot):
     bot.llm.script(add(100, "tea"))
     bot.send(SAGAR, "100 tea")
-    spec = next(t for t in bot.llm.last.tools if t.name == "add_expense")
-    assert spec.parameters["properties"]["paid_by"]["enum"] == ["Sagar", "Biren", "Lalo"]
+    spec = next(t for t in bot.llm.last.tools if t.name == "add_expenses")
+    item = spec.parameters["properties"]["items"]["items"]
+    assert item["properties"]["paid_by"]["enum"] == ["Sagar", "Biren", "Lalo"]
 
 
 # ── Model mistakes and outages ─────────────────────────────────────────────────────────────

@@ -133,19 +133,27 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     extras = [o for r in runs if r.ok for o in r.result.get("outs", [])]
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
              and "expense" in r.result]
+    proposal = None if batch else _merge_proposals(
+        [r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
+    # "..., coffee by lalo" -> remember "coffee by lalo", so a plain "50" next completes it
+    # (live bug 29-10: the bot said "send coffee 100", the user sent "50", it was lost).
+    ask = None if (batch or proposal) else amount_question(ctx, message, runs)
     # Whatever the model did, the user hears about every part of the message that did NOT
     # become an entry (live bug: 4 expenses typed, 1 saved, no warning).
-    reply = "\n\n".join(p for p in (reply, list_notes(ctx, message, runs)) if p)
+    reply = "\n\n".join(p for p in (reply, list_notes(ctx, message, runs, asking=ask)) if p)
     if batch:
         return Outcome(reply, added, runs, llm_error=llm_error, extras=extras)
 
-    proposal = _merge_proposals([r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
     if proposal:
         proposals.store(ctx.session, ctx.chat_id, ctx.sender, proposal)
         # The preview must be shown word for word: the user is about to say "yes" to exactly it.
         reply = "\n\n".join(p for p in (reply, proposals.preview(proposal)) if p)
         return Outcome(reply, added, runs, proposals.buttons(proposal), extras=extras)
     reply, buttons = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
+    if ask and not pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT):
+        pending.drop(ctx.session, ctx.chat_id, ctx.sender.id, pending.TIME)
+        pending.put(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT,
+                    {"message": ask, "tries_left": MAX_TRIES})
     if buttons is None:
         buttons = next((r.result["buttons"] for r in runs if r.ok and r.result.get("buttons")), None)
     return Outcome(reply, added, runs, buttons, llm_error=llm_error, extras=extras)
@@ -155,15 +163,28 @@ def _is_slot_reply(ctx: Context, waiting: pending.Pending, text: str) -> bool:
     if waiting.kind == pending.PLANT:
         return farm_tools.is_plant_reply(farm.plants(ctx.session), text)
     if waiting.kind == pending.AMOUNT:
-        return bool(guards.amount_only_pattern(ctx.people_words).match(text))
+        return (bool(guards.amount_only_pattern(ctx.people_words).match(text))
+                or _is_item_amount_reply(ctx, waiting, text))
     if waiting.payload.get("mode") == "ampm" and guards.DAYPART_ONLY.match(text):
         return True
     return bool(guards.TIME_ONLY.match(text))
 
 
+def _is_item_amount_reply(ctx: Context, waiting: pending.Pending, text: str) -> bool:
+    """"coffee 50" while "coffee by lalo" waits: the same item again, now with one amount. Not a
+    new entry — as a new message it would be paid by the sender, not Lalo."""
+    words = guards.item_words(text, ctx.people_words)
+    asked = set(guards.item_words(waiting.payload["message"], ctx.people_words))
+    return (len(guards.numbers_in(text)) == 1 and bool(words) and set(words) <= asked
+            and not members.mentioned(ctx.people, text))
+
+
 def _glue(waiting: pending.Pending, reply: str) -> str:
     original = waiting.payload["message"]
     mode = waiting.payload.get("mode", "add")
+    if waiting.kind == pending.AMOUNT and guards.item_words(reply, set()):
+        # "coffee 50": only the amount is new; the item and the payer are already in `original`.
+        return f"{original} {guards.numbers_in(reply)[0].normalize():f}"
     if mode == "ampm":
         return f"{original} ({reply})"
     if mode == "replace":
@@ -208,7 +229,7 @@ def system_prompt(ctx: Context) -> str:
         "DATES: for any date condition pass date_from/date_to (DD-MM-YYYY) to search_expenses; "
         "never filter or total dates yourself. "
         "AMOUNT: never guess an amount. If the user wants to add an expense but the message has "
-        "no amount in digits, call add_expense with amount 0 — the system will ask for it. "
+        "no amount in digits, call add_expenses with that item at amount 0 — the system will ask for it. "
         "MEETINGS: schedule_meeting, cancel_meeting and reschedule_meeting only PROPOSE; the user "
         "confirms with yes, so never say a meeting is booked, cancelled or moved. Work out dates "
         "from 'kale', 'tomorrow', 'next sunday' with today's date; give time as 24-hour HH:MM. "
@@ -233,8 +254,10 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | No
                 if nudged:   # it had nothing to add: keep the fixed templates, list_notes warns
                     return runs, _templates(runs) or turn.text or "", None
                 return runs, turn.text or "Sorry, I couldn't complete that. Please try again.", None
-            round_runs = [_run_tool(ctx, call, message, done_writes) for call in turn.calls]
+            expanded = expand_calls(turn.calls)
+            round_runs = [_run_tool(ctx, call, message, done_writes) for _, call in expanded]
             runs += round_runs
+            _log_round(round_no, round_runs)
             needs_model = any(r.name in NEEDS_MODEL and r.ok for r in round_runs)
             left = [] if nudged else unsaved_parts(ctx, message, runs)
             if not _unresolved_errors(runs) and not needs_model and not left:
@@ -243,11 +266,13 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | No
                 return runs, _templates(runs), None
             if round_no == MAX_ROUNDS:
                 break   # don't pay for a model answer we would not use
-            results = [(r.name, _for_model(r.result)) for r in round_runs]
+            results = _results_for_model(turn.calls, expanded, round_runs)
             if left:
-                # The model added fewer entries than the message lists. Ask it once for the rest;
-                # if it still skips them, list_notes tells the user (never a silent drop).
+                # The model added fewer entries than the message lists. Ask once more — with the
+                # stronger fallback model, since the main one already skipped them. If they are
+                # still missing, list_notes tells the user (never a silent drop).
                 nudged = True
+                getattr(chat, "escalate", lambda: None)()
                 name, last = results[-1]
                 results[-1] = (name, {**last, "not_saved_yet": left,
                                       "note": "These parts of the message were not added. Call "
@@ -285,6 +310,49 @@ def _run_tool(ctx: Context, call: ToolCall, message: str, done_writes: set[str])
 
 
 NEEDS_MODEL = set(meeting_tools.NEEDS_MODEL)
+
+
+def expand_calls(calls: list[ToolCall]) -> list[tuple[int, ToolCall]]:
+    """add_expenses(items=[a, b, c]) -> three add_expense runs, each checked on its own by the
+    same gates. Returns (index of the model's call, call) so results go back per call."""
+    out: list[tuple[int, ToolCall]] = []
+    for i, call in enumerate(calls):
+        if call.name != tools.ADD_EXPENSES:
+            out.append((i, call))
+            continue
+        items = call.args.get("items")
+        items = [it for it in items if isinstance(it, dict)] if isinstance(items, list) else []
+        # An empty list is "add an expense" with nothing in it: the amount gate asks.
+        for item in items or [{"amount": 0}]:
+            out.append((i, ToolCall(tools.ADD_EXPENSE, dict(item))))
+    return out
+
+
+def _results_for_model(calls: list[ToolCall], expanded: list[tuple[int, ToolCall]],
+                       runs: list[ToolRun]) -> list[tuple[str, dict]]:
+    """One function response per call the model made, as the API expects."""
+    per_call: dict[int, list[ToolRun]] = {}
+    for (i, _), run in zip(expanded, runs):
+        per_call.setdefault(i, []).append(run)
+    out = []
+    for i, call in enumerate(calls):
+        rs = per_call.get(i, [])
+        if call.name == tools.ADD_EXPENSES:
+            out.append((call.name, {"items": [_for_model(r.result) for r in rs]}))
+        else:
+            out.append((call.name, _for_model(rs[0].result) if rs else {}))
+    return out
+
+
+def _log_round(round_no: int, runs: list[ToolRun]) -> None:
+    """One log line per model round: which tools, which amount and payer, and what happened.
+    Live bug 29-10: "1 entry once, 4 the next time" could only be guessed, never shown."""
+    log.info("tool round", extra={"fields": {"round": round_no, "calls": [
+        {"tool": r.name, "amount": str(r.args.get("amount", "")),
+         "paid_by": str(r.args.get("paid_by", "")),
+         "result": "ok" if r.ok else ("skipped" if r.result.get("skipped")
+                                      else (r.needs and f"needs_{r.needs}") or "error")}
+        for r in runs]}})
 
 
 def all_tools(ctx: Context):
@@ -468,7 +536,48 @@ def unsaved_parts(ctx: Context, message: str, runs: list[ToolRun]) -> list[str]:
     return left
 
 
-def list_notes(ctx: Context, message: str, runs: list[ToolRun]) -> str:
+def _loose_parts(ctx: Context, message: str, runs: list[ToolRun]) -> list[tuple[str, str]]:
+    """(item, its comma-part) for items written with no amount that did not end up in any saved
+    or proposed entry: "150 tea, coffee by lalo" -> [("coffee", "coffee by lalo")]."""
+    if not any(r.name == tools.ADD_EXPENSE for r in runs):
+        return []
+    taken = set()
+    for r in runs:
+        if r.name != tools.ADD_EXPENSE or not r.ok:
+            continue
+        p = r.result.get("proposal") or {}
+        descs = [it["description"] for it in p.get("items", [])] + (
+            [p["item"]["description"]] if p.get("item") else [])
+        if r.result.get("expense"):
+            descs.append(r.result["expense"].description)
+        for d in descs:
+            taken |= set(guards.item_words(d, ctx.people_words))
+    out = []
+    for part in guards.segments(message):
+        if guards.numbers_in(part):
+            continue
+        for w in guards.item_words(part, ctx.people_words):
+            if w not in taken and w in guards.amountless_items(message, ctx.people_words):
+                out.append((w, part))
+    return out
+
+
+def amount_question(ctx: Context, message: str, runs: list[ToolRun]) -> str | None:
+    """The text to remember for the first item with no amount, so "50" can complete it. None if
+    who paid for it would be unclear (two people named, none in its own part)."""
+    loose = _loose_parts(ctx, message, runs)
+    if not loose:
+        return None
+    _, part = loose[0]
+    if members.mentioned(ctx.people, part):
+        return part
+    named = members.mentioned(ctx.people, message)
+    if len(named) == 1:
+        return f"{part} by {named[0].name.split()[0]}"
+    return part if not named else None
+
+
+def list_notes(ctx: Context, message: str, runs: list[ToolRun], asking: str | None = None) -> str:
     """Code-written lines for everything in the message that was not saved: a payer the code
     could not be sure of, a listed amount that never became an entry, an item with no amount."""
     notes = []
@@ -484,22 +593,17 @@ def list_notes(ctx: Context, message: str, runs: list[ToolRun]) -> str:
     if left:
         notes.append("⚠️ Not saved: " + ", ".join(f"\"{p}\"" for p in left)
                      + "\nPlease send " + ("it" if len(left) == 1 else "them") + " again.")
-    taken = set()
-    for r in runs:
-        if r.name != tools.ADD_EXPENSE or not r.ok:
-            continue
-        p = r.result.get("proposal") or {}
-        descs = [it["description"] for it in p.get("items", [])] + (
-            [p["item"]["description"]] if p.get("item") else [])
-        if r.result.get("expense"):
-            descs.append(r.result["expense"].description)
-        for d in descs:
-            taken |= set(guards.item_words(d, ctx.people_words))
-    loose = [w for w in guards.amountless_items(message, ctx.people_words) if w not in taken]
-    if loose:
-        what = ", ".join(loose)
-        notes.append(f"❌ No amount for {what}, so it was not saved.\nSend it with the amount, "
-                     f"e.g. \"{loose[0]} 100\".")
+    loose = list(dict.fromkeys(w for w, _ in _loose_parts(ctx, message, runs)))
+    if loose and asking:
+        first, rest = loose[0], loose[1:]
+        notes.append(f"📝 No amount for {first}. How much was it?\nSend just the amount, e.g. "
+                     "100 (within 2 minutes).")
+        if rest:
+            notes.append(f"❌ No amount for {', '.join(rest)} either, so not saved yet. Send it "
+                         f"with the amount afterwards, e.g. \"{rest[0]} 100\".")
+    elif loose:
+        notes.append(f"❌ No amount for {', '.join(loose)}, so it was not saved.\nSend it with "
+                     f"the amount, e.g. \"{loose[0]} 100\".")
     return "\n\n".join(notes)
 
 

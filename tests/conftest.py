@@ -166,6 +166,10 @@ class FakeChat:
         self.user_messages: list[str] = []
         self.tool_results: list[list] = []
         self.media: list[tuple] = []
+        self.escalated = 0   # times the agent switched to the stronger fallback model
+
+    def escalate(self):
+        self.escalated += 1
 
     def _next(self):
         if not self.llm.turns:

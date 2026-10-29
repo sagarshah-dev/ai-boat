@@ -169,7 +169,7 @@ def specs() -> list[ToolSpec]:
                  "fodla, neem spray karyu', 'south side 10 lemon ropya'. Copy only what the user "
                  "wrote: never invent a plant, product, dose, time or date. Leave a field empty if "
                  "it was not said — the system asks for what matters. If the message is ONLY money "
-                 "spent, use add_expense instead. Not for a plan or advice — use save_farm_advice.",
+                 "spent, use add_expenses instead. Not for a plan or advice — use save_farm_advice.",
                  _s("OBJECT", properties={
                      "activity": _s("STRING", "What happened. 'observation' for a problem only seen, "
                                               "'dead' for plants that died.", enum=acts),
@@ -244,7 +244,7 @@ def specs() -> list[ToolSpec]:
 SYSTEM_RULES = (
     "FARM JOURNAL: log_farm_activity, save_farm_advice, record_treatment_result and "
     "delete_last_farm_note only PROPOSE — never say a farm note is saved. Something done or seen "
-    "on the farm -> log_farm_activity (and also add_expense only if money was spent). Exact "
+    "on the farm -> log_farm_activity (and also add_expenses only if money was spent). Exact "
     "questions (when, how many times, which product, how many plants) -> get_farm_activities / "
     "get_plant_counts. Questions answered by past experience or the farmer's advice -> "
     "search_farm_notes. Never answer a farm question from your own knowledge, and never invent a "
