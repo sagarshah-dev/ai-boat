@@ -82,10 +82,18 @@ def run_case(case: dict, client, tg, rec, delay: float) -> tuple[bool, bool, lis
     deleted = [r for r in rows if r.id <= len(SEED) and r.deleted_at is not None] + \
               [r for r in new if r.deleted_at is not None]
     expected = list(exp.get("saved", []))
+    # "may_save": either outcome is right (e.g. "500 sevsad, coffee": saving sevsad and asking
+    # coffee's amount, or asking whether 500 is for both). Never wrong, never missed.
+    optional = list(exp.get("may_save", []))
     for r in (r for r in new if r.deleted_at is None):
         match = next((e for e in expected if same(e["amount"], r.amount)
                       and ("paid_by" not in e or same(e["paid_by"], names[r.paid_by]))), None)
         if match is None:
+            extra = next((e for e in optional if same(e["amount"], r.amount)
+                          and ("paid_by" not in e or same(e["paid_by"], names[r.paid_by]))), None)
+            if extra is not None:
+                optional.remove(extra)
+                continue
             wrong = True
             problems.append(f"WRONG WRITE: ₹{r.amount} '{r.description}' paid by {names[r.paid_by]}")
             continue
@@ -115,7 +123,20 @@ def run_case(case: dict, client, tg, rec, delay: float) -> tuple[bool, bool, lis
             problems.append(f"{tool} args {args}, expected {want}")
     if "awaiting_amount" in exp and waiting_amount != exp["awaiting_amount"]:
         problems.append(f"waiting for an amount: {waiting_amount}, expected {exp['awaiting_amount']}")
+    if problems:
+        # What the model actually asked for, so a failed run explains itself in the report.
+        problems.append("model: " + ("; ".join(_short_call(c) for c in rec.calls) or "no tool call"))
     return not problems, wrong, problems
+
+
+def _short_call(c: dict) -> str:
+    args = c["args"]
+    if c["name"] == "add_expenses":
+        items = args.get("items") or []
+        return "add_expenses[" + ", ".join(
+            f"{i.get('amount')} {i.get('description', '')}/{i.get('paid_by', '')}"
+            for i in items if isinstance(i, dict)) + "]"
+    return c["name"] + (f"({json.dumps(args, ensure_ascii=False)[:60]})" if args else "()")
 
 
 def main() -> None:

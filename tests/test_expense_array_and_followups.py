@@ -218,3 +218,30 @@ def test_voice_list_is_one_preview(bot):
     assert rows() == []
     bot.send(SAGAR, "yes")
     assert [r[1] for r in rows()] == ["tea", "diesel"]
+
+
+# ── Regressions caught by the real-model eval, 29-10-2026 ──────────────────────────────────
+
+def test_eval_and_between_two_payers_without_comma(bot):
+    # PR #6 read only commas, so "... by sagar and ... by biren" looked like two names for one
+    # amount and nothing was saved.
+    bot.llm.script(adds(item(200, "tea"), item(500, "diesel", "Biren")))
+    bot.send(SAGAR, "200 tea by sagar and 500 diesel by biren")
+    assert rows() == [(200, "tea", "Sagar"), (500, "diesel", "Biren")]
+
+
+def test_eval_and_inside_one_item_is_still_one_entry(bot):
+    bot.llm.script(adds(item(200, "tea and nasta")))
+    reply = bot.send(SAGAR, "tea and nasta 200 by lalo")
+    assert rows() == [(200, "tea and nasta", "Lalo")] and "Not saved" not in reply
+
+
+def test_eval_amount_reply_keeps_its_payer(bot):
+    # PR #7 treated "biren" in "100 by biren" as an item word and glued "tea 100": the payer was
+    # dropped, then refused as a guess.
+    bot.llm.script(adds(item(0, "tea")))
+    bot.send(SAGAR, "tea")
+    bot.llm.script(adds(item(100, "tea", "Biren")))
+    bot.send(SAGAR, "100 by biren")
+    assert bot.llm.chats[-1].user_messages[-1] == "tea 100 by biren"
+    assert rows() == [(100, "tea", "Biren")]
