@@ -19,6 +19,17 @@ _CALLBACK_DATA_MAX_BYTES = 64  # Telegram rejects the whole message above this
 MAX_TEXT = 4096                # Telegram's limit for one message
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024   # the Bot API serves files up to 20 MB
 
+# Methods that put something new in the chat. Sending one twice shows the user two copies.
+_SENDS = {"sendMessage", "sendPhoto", "sendDocument"}
+# The request never left this machine, so a retry cannot duplicate anything. Any other failure
+# (a read timeout, a dropped connection, a garbled reply) may come AFTER Telegram delivered it:
+# seen live on 29-10-2026, a ReadTimeout on sendMessage and the retry showed the answer twice.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def _may_retry(method: str, exc: Exception) -> bool:
+    return method not in _SENDS or isinstance(exc, _NOT_SENT)
+
 
 class TelegramClient:
     def __init__(self, token: str, timeout_s: float = 10.0, http: httpx.Client | None = None):
@@ -47,6 +58,9 @@ class TelegramClient:
             except (httpx.HTTPError, ValueError) as exc:
                 log.warning("telegram call error", extra={"fields": {
                     "method": method, "error": type(exc).__name__, "attempt": attempt + 1}})
+                if not _may_retry(method, exc):
+                    # A lost reply the user can ask again for beats the same reply twice.
+                    return None
                 wait = None
             if attempt < _RETRIES - 1:
                 time.sleep(min(float(wait), 5.0) if wait else _BACKOFF_S[attempt])
@@ -91,6 +105,8 @@ class TelegramClient:
             except (httpx.HTTPError, ValueError) as exc:
                 log.warning("telegram sendDocument error", extra={"fields": {
                     "error": type(exc).__name__, "attempt": attempt + 1}})
+                if not _may_retry("sendDocument", exc):
+                    return False
             if attempt < _RETRIES - 1:
                 time.sleep(_BACKOFF_S[attempt])
         return False

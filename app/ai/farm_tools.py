@@ -39,11 +39,13 @@ GENERAL_TTL = timedelta(minutes=10)
 
 # Where an answer came from, on every farm reply, so the user (and a reviewer) can see which
 # answers were looked up exactly and which were found by meaning.
-SRC_EXACT = "📒 Source: farm journal — exact match"
-SRC_EXACT_EN = "📒 Source: farm journal — matched in the English translation"
-SRC_COUNT = "📒 Source: farm journal — counted by code"
-SRC_HYBRID = "🔎 Source: found by meaning (RAG) · dates from the journal"
-SRC_RAG = "🔎 Source: your notes, found by meaning (RAG)"
+# One line under every farm answer: the concept used and how the rows were found. Exact rows
+# (SQL) and meaning search (RAG) answer different questions; the user should see which one ran.
+SRC_EXACT = "📒 How: exact match (SQL) — journal rows that name these words"
+SRC_EXACT_EN = "📒 How: exact match (SQL) — words found in the English copy of the notes"
+SRC_COUNT = "📒 How: counted by code (SQL) — no AI in the numbers"
+SRC_HYBRID = "🔎 How: notes found by meaning (RAG), dates read from the journal rows (SQL)"
+SRC_RAG = "🔎 How: RAG"      # prefix only; rag.how_line() writes the full line
 
 
 # ── Word checks ─────────────────────────────────────────────────────────────────────────────
@@ -135,15 +137,57 @@ def is_details_reply(known: list[farm.PlantInfo], text: str) -> bool:
     return bool(re.search(r"\d", text)) or bool(time_of_day_in(text))
 
 
+_NOT_A_PLANT = {"all", "badha", "badhu", "badhi", "chhod", "chod", "zad", "plant", "plants",
+                "tree", "trees", "farm", "khet", "wadi", "vadi", "fal", "fruit", "pan", "leaf",
+                "leaves", "phool", "flower", "mul", "root", "dal", "branch"}
+
+
+def unknown_plant(known: list[farm.PlantInfo], named: str, message: str, args: dict) -> str:
+    """The plant the user named that is NOT in the plants list ("dadam"), else "". The model only
+    points at the word; it counts only if the user wrote it, and it is not a product, a part of a
+    plant or a word the list already knows."""
+    named = named.strip()
+    w = words(named)
+    if not named or len(w) > 2 or not grounded_words(named, message, min_len=3):
+        return ""
+    if farm.resolve_plants(known, named) is not None:
+        return ""
+    product = set(words(str(args.get("product") or "")))
+    if any(t in _NOT_A_PLANT or t in _ACTIVITY_WORDS or t in product for t in w):
+        return ""
+    return " ".join(x for x in w if x in set(words(message)))[:30]
+
+
+def _plant_warning(ctx: "Context", match) -> str:
+    """A plant picked from the buttons while the note names a plant that is not in the list:
+    said out loud, because this is how a pomegranate note became a guava note (29-10)."""
+    named = getattr(ctx, "unknown_plant", "")
+    if not named or not match or match.all_farm:
+        return ""
+    if farm.resolve_plants(farm.plants(ctx.session), named) is not None:
+        return ""       # added to the list since the question: it is a real plant now
+    return (f"⚠️ Your note says \"{named}\", but it will be saved under "
+            f"{farm.plant_label(match.plants)}. Cancel and ask the admin to add {named} if that is wrong.")
+
+
 def is_plant_reply(known: list[farm.PlantInfo], text: str) -> bool:
     return len(text.split()) <= 5 and farm.resolve_plants(known, text) is not None
 
 
-def plant_buttons(known: list[farm.PlantInfo]) -> Buttons:
+def plant_buttons(known: list[farm.PlantInfo], add: str = "") -> Buttons:
     # Telegram refuses callback data over 64 bytes (and the whole message with it).
     names = [n for n in farm.plant_names(known) if len(f"plant:{n}".encode()) <= 64][:8]
     rows = [[(n, f"plant:{n}") for n in names[i:i + 3]] for i in range(0, len(names), 3)]
-    return rows + [[("All plants", "plant:all")]]
+    # The name is NOT in the button: it is read back from the waiting question, so a forged
+    # button can't add a plant called anything.
+    extra = [[(f"➕ Add {add[:20]}", "plant:+add")]] if add else []
+    return extra + rows + [[("All plants", "plant:all")]]
+
+
+def unknown_plant_text(name: str, is_admin: bool) -> str:
+    who = ("Tap ➕ to add it to the list" if is_admin
+           else "Only the admin can add a plant — ask them")
+    return f"🌳 \"{name}\" is not in the plant list. {who}, or pick the plant below."
 
 
 ASK_PLANT = "🌳 Which plant is this about? Tap one below, or type it (e.g. aamba, chiku, badha chhod)."
@@ -283,8 +327,12 @@ def _log(ctx: "Context", known, args: dict, message: str) -> dict:
         return {"error": f"activity must be one of {', '.join(farm.ACTIVITIES)}. Call again."}
     match = farm.resolve_plants(known, message)
     if match is None:
-        return {"error": "The user did not name a plant. Nothing was saved; the system asks "
-                         "which plant.", "needs_plant": True}
+        unknown = unknown_plant(known, str(args.get("plant") or ""), message, args)
+        out = {"error": "The user did not name a plant. Nothing was saved; the system asks "
+                        "which plant.", "needs_plant": True}
+        if unknown:
+            out["unknown_plant"] = unknown
+        return out
 
     raw_date = str(args.get("date") or "").strip()
     if raw_date and not period_signal(message):
@@ -326,10 +374,11 @@ def _log(ctx: "Context", known, args: dict, message: str) -> dict:
         location = ""
 
     p = {"kind": "farm_note", "activity": activity, "plants": match.plants,
+         "warning": _plant_warning(ctx, match),
          "variety": match.variety, "location": location, "qty": qty, "product": product,
          "dose": dose, "time_of_day": time_of_day_in(message), "problem": problem,
          "date": on.isoformat(), "date_to": date_to.isoformat() if date_to else "",
-         "note": message.strip(), "photo": ctx.photo, "source": ctx.source,
+         "note": (ctx.note_text or message).strip(), "photo": ctx.photo, "source": ctx.source,
          "source_message": message.strip()}
     missing = []
     if activity in farm.TREATMENTS:
@@ -416,6 +465,17 @@ def _meaning_lookup(ctx: "Context", topic: list[str], topic_en: str, plant, vari
     return rows, ""
 
 
+# "When was it LAST done" — only these words make the answer one row. Live bug 29-10: "neem oil
+# kyare chhantyu?" got the model's last_only=True, so 1 of 2 sprays was shown and the failed
+# chiku spray was hidden.
+_LAST_WORDS = re.compile(r"\b(chhell\w*|chell\w*|chhel\w*|last|latest|recent\w*|most recent|"
+                         r"aakhri|akhri|chhevte|chevte)\b|છેલ્લ|આખરી", re.IGNORECASE)
+
+
+def asks_for_last(message: str) -> bool:
+    return bool(_LAST_WORDS.search(message or ""))
+
+
 def _activities(ctx: "Context", known, args: dict, message: str) -> dict:
     match = farm.resolve_plants(known, message)
     plant = farm.single_plant(match)
@@ -436,7 +496,8 @@ def _activities(ctx: "Context", known, args: dict, message: str) -> dict:
     return {"text_reply": activities_text(ctx, plant=plant, variety=variety, several=several,
                                           activity=activity, topic=topic, df=df, dt=dt, note=note,
                                           topic_en=str(args.get("topic_en") or "").strip()[:120],
-                                          last_only=bool(args.get("last_only")))}
+                                          last_only=bool(args.get("last_only"))
+                                          and asks_for_last(message))}
 
 
 def activities_text(ctx: "Context", *, plant=None, variety=None, several=(), activity=None,
@@ -475,8 +536,12 @@ def activities_text(ctx: "Context", *, plant=None, variety=None, several=(), act
         e = rows[0]
         ago = (ctx.today - e.entry_date).days
         when = " (today)" if ago == 0 else f" ({ago} day{'s' if ago != 1 else ''} ago)"
-        return f"📒 Last {what}{period}{when}:\n• {farm.journal_line(e)}\n{source}"
-    shown = rows[:10]
+        older = len(rows) - 1
+        more = (f"\n…{older} older note{'s' if older != 1 else ''} too — ask without \"last\" to "
+                "see all." if older else "")
+        return f"📒 Last {what}{period}{when}:\n• {farm.journal_line(e)}{more}\n{source}"
+    # Newest first, at most 5: enough to see the pattern (what was tried, what worked) on a phone.
+    shown = rows[:5]
     text = (f"📒 {what[:1].upper() + what[1:]} notes{period} — {len(rows)} found:\n"
             + "\n".join("• " + farm.journal_line(e) for e in shown))
     if len(rows) > len(shown):
@@ -534,12 +599,13 @@ def _search(ctx: "Context", known, args: dict, message: str) -> dict:
     missing = ""
     if found.mode == "basic":
         if found.hits:
-            return {"text_reply": rag.basic_reply(found)}
+            return {"text_reply": rag.basic_reply(found) + "\n" + rag.how_line(found, f)}
     else:
         ans = rag.answer(ctx.llm, question, found)
         if ans.status != "not_found":
             outs = [Photo(fid, cap) for fid, cap in ans.photos]
-            return {"text_reply": ans.reply + "\n" + SRC_RAG, "outs": outs, "cited": ans.cited}
+            return {"text_reply": ans.reply + "\n" + rag.how_line(found, f, ans.status),
+                    "outs": outs, "cited": ans.cited}
         missing = ans.missing
 
     text = "📒 No note found about this in the farm journal or the farmer's advice."
@@ -577,6 +643,8 @@ def note_summary(p: dict) -> str:
     lines.append(f"🧪 {what}")
     if p.get("problem"):
         lines.append(f"⚠️ Problem: {p['problem']}")
+    if p.get("warning"):
+        lines.append(p["warning"])
     if p.get("photo"):
         lines.append("📷 Photo attached")
     return "\n".join(lines)
@@ -611,6 +679,8 @@ def _note_other_text(ctx: "Context", p: dict, text: str) -> list[Out] | None:
         return None
     from app.ai import agent     # here: agent imports this module
     ctx.details_asked, ctx.photo, ctx.source = True, p.get("photo", ""), p.get("source", "text")
+    # The dose / time is the user's own words and belongs in the note; a picked plant does not.
+    ctx.note_text = f"{p['note']} {text.strip()}"
     outcome = agent.handle(ctx, f"{p['source_message']} {text}")
     return [Reply(outcome.reply, outcome.buttons), *outcome.extras]
 
@@ -724,4 +794,70 @@ def general_answer(ctx: "Context") -> list[Out]:
     if waiting is None or expired:
         return [Reply("Ask the question again first, then tap 💡 General advice.")]
     return [Reply(rag.general_advice(ctx.llm, waiting.payload["question"]))]
+
+
+# ── Journal -> expenses: the second hop, one tap ────────────────────────────────────────────
+# "Kesar na daag ni dava no kharcho?" names the PROBLEM; the expense names the PRODUCT. The
+# journal links the two. Until a graph does this hop on its own, code finds the link and the
+# user confirms it with one tap — a wrong link costs a tap, not a wrong total.
+
+_MONEY_WORDS = {strip_marks(w).lower() for w in (
+    "kharcho", "kharch", "kharchi", "kharchu", "ketlo", "ketla", "ketlu", "paisa", "rupiya",
+    "cost", "costs", "spent", "spend", "price", "total", "amount", "bill", "expense", "expenses",
+    "dava", "dawa", "davani", "medicine", "kimat", "lagya", "lagyo", "thayo", "nu", "ni", "no",
+    "ખર્ચ", "ખર્ચો", "કેટલો", "દવા")}
+
+HOP = re.compile(r"^xs:(\d{1,9})$")
+
+
+def expense_hop(ctx: "Context", message: str) -> tuple[str, Buttons] | None:
+    """The journal note this money question is about, if its words point to exactly the notes
+    that name a product. Buttons search expenses for that product."""
+    known = farm.plants(ctx.session)
+    topic = [t for t in topic_words(known, message) if t not in _MONEY_WORDS]
+    if not topic:
+        return None
+    match = farm.resolve_plants(known, message)
+    plant = farm.single_plant(match)
+    scored = []
+    for e in farm.query(ctx.session, plant=plant):
+        if not e.product.strip():
+            continue
+        score = sum(1 for t in topic if farm.mentions(e, t))
+        if score:
+            scored.append((score, e))
+    if not scored:
+        return None
+    best = max(sc for sc, _ in scored)
+    seen, picks = set(), []
+    for _, e in sorted(((sc, e) for sc, e in scored if sc == best), key=lambda x: -x[1].id):
+        if e.product.lower() not in seen:
+            seen.add(e.product.lower())
+            picks.append(e)
+    picks = picks[:2]
+    lines = "\n".join(f"📒 J-{e.id} ({fmt_date(e.entry_date)}): {e.problem or e.note[:40]} → "
+                      f"{e.product}" for e in picks)
+    buttons = [[(f"🔎 {e.product[:28]} in expenses", f"xs:{e.id}")] for e in picks]
+    return f"The journal links this to:\n{lines}\nTap to search expenses for it.", buttons
+
+
+def hop_answer(ctx: "Context", entry_id: int) -> list[Out]:
+    """The tapped hop: expenses for the product of journal note J-<id>. The product comes from the
+    database, never from the button."""
+    from app.ai import agent       # here: agent imports this module
+    from app.services import expenses
+    e = ctx.session.get(farm.JournalEntry, entry_id)
+    if e is None or not e.product.strip():
+        return [Reply("This button is no longer valid.")]
+    rows = expenses.search(ctx.session, text=e.product)
+    path = (f"🔎 Path: 📒 J-{e.id} ({e.problem or 'note'}) → 💊 {e.product} → 💰 expenses "
+            "(meaning: journal, money: exact match)")
+    if not rows:
+        first = e.product.split()[0]
+        rows = expenses.search(ctx.session, text=first) if first.lower() != e.product.lower() else []
+        if rows:
+            path = path.replace(f"💊 {e.product}", f"💊 {first}")
+    body = (agent.search_text(rows, expenses.total(rows)) if rows
+            else f"💰 No expense with \"{e.product}\" in its description.")
+    return [Reply(f"{body}\n{path}")]
 

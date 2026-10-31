@@ -63,6 +63,43 @@ def is_knowledge_voice(duration_s: int, caption: str, advice_mode: bool, min_sec
     return advice_mode or int(duration_s or 0) >= min_seconds or bool(_KNOWLEDGE_WORDS.search(caption or ""))
 
 
+# A line that opens with its own date ("15-Oct:", "18/10", "aaje", "kale") is its own note.
+_DATED_LINE = re.compile(
+    r"^\s*(\d{1,2}\s*[-/. ]\s*(\d{1,2}|[a-z]{3,9})\b|aaje|aje|kale|gaikale|parmdivse|today|yesterday)",
+    re.IGNORECASE)
+
+
+_UNIT_AFTER = re.compile(
+    r"\d+(?:\.\d+)?\s*(ml|l|ltr|litre|liter|lit|g|gm|gram|grams|kg|min|mins|minute|minutes|kalak|"
+    r"hour|hours|divas|day|days|%|x|plant|plants|chhod|chod|zad|tree|trees|feet|ft|inch)\b",
+    re.IGNORECASE)
+
+
+def _bare_number(line: str) -> bool:
+    """A number with no unit after the date ("khatar 500") is money: an expense, not a note."""
+    rest = _DATED_LINE.sub("", line, count=1)
+    return bool(re.search(r"\d", _UNIT_AFTER.sub("", rest)))
+
+
+def several_notes(text: str) -> list[str]:
+    """The lines of a message that holds several dated farm notes, else []. Each note needs its
+    own preview and its own "Save": one "yes" can only ever confirm one thing. A note typed over
+    two lines has one date at most, so it is not split."""
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    dated = [ln for ln in lines if _DATED_LINE.match(ln) and looks_like_farm(ln)]
+    if len(dated) < 2 or _MONEY_RE.search(text) or any(_bare_number(ln) for ln in lines):
+        return []
+    return lines
+
+
+def several_notes_reply(lines: list[str]) -> str:
+    # Live bug 29-10: four notes in one message, the same error three times, nothing saved and
+    # no word about why. Now nothing is saved and the user is told exactly what to do.
+    listed = "\n".join(f"{i}. {ln}" for i, ln in enumerate(lines, 1))
+    return (f"📒 {len(lines)} farm notes in one message — nothing was saved.\n"
+            "Send them one per message, so each gets its own preview and ✅ Save:\n\n" + listed)
+
+
 def multi_line_to_ai(text: str) -> bool:
     """Several lines usually mean several expenses. A farm note typed over two lines must reach
     the AI as ONE message instead."""

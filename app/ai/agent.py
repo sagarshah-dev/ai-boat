@@ -67,6 +67,10 @@ class Context:
     photo: str = ""
     source: str = "text"
     details_asked: bool = False        # the one "dose / time?" question was already asked
+    # The user's own words for a farm note when the text the model sees was glued from a question
+    # and its answer ("pan par fodla" + "Mango"). The answer fills a field; it is not the note.
+    note_text: str = ""
+    unknown_plant: str = ""            # a plant the note names that the plants list does not have
 
     def __post_init__(self):
         if not self.people:
@@ -128,13 +132,17 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
         # The note's photo and source travel with the question "which plant?".
         ctx.photo = ctx.photo or waiting.payload.get("photo", "")
         ctx.source = waiting.payload.get("source", ctx.source)
+        # Live bug 29-10: the tapped "Guava" was saved inside the note ("...30 min karyu Guava"),
+        # so a search for guava found a pomegranate note.
+        ctx.note_text = waiting.payload.get("note", waiting.payload["message"])
+        ctx.unknown_plant = waiting.payload.get("unknown", "")
 
     runs, reply, llm_error = _run_model(ctx, message)
     extras = [o for r in runs if r.ok for o in r.result.get("outs", [])]
     added = [r.result["expense"] for r in runs if r.name == tools.ADD_EXPENSE and r.ok
              and "expense" in r.result]
-    proposal = None if batch else _merge_proposals(
-        [r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")])
+    found = [r.result["proposal"] for r in runs if r.ok and r.result.get("proposal")]
+    proposal = None if batch else _merge_proposals(found)
     # "..., coffee by lalo" -> remember "coffee by lalo", so a plain "50" next completes it
     # (live bug 29-10: the bot said "send coffee 100", the user sent "50", it was lost).
     ask = None if (batch or proposal) else amount_question(ctx, message, runs)
@@ -147,7 +155,8 @@ def handle(ctx: Context, text: str, *, batch: bool = False) -> Outcome:
     if proposal:
         proposals.store(ctx.session, ctx.chat_id, ctx.sender, proposal)
         # The preview must be shown word for word: the user is about to say "yes" to exactly it.
-        reply = "\n\n".join(p for p in (reply, proposals.preview(proposal)) if p)
+        reply = "\n\n".join(p for p in (reply, proposals.preview(proposal),
+                                         dropped_proposals_note(found)) if p)
         return Outcome(reply, added, runs, proposals.buttons(proposal), extras=extras)
     reply, buttons = _follow_up(ctx, waiting, is_slot, user_text, runs, reply)
     if ask and not pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.AMOUNT):
@@ -204,6 +213,14 @@ def _merge_proposals(found: list[dict]) -> dict | None:
     if items and all(p["kind"] == "expenses" for p in found):
         return proposals.expenses_proposal(items, found[0].get("source", "voice"))
     return found[0]
+
+
+def dropped_proposals_note(found: list[dict]) -> str:
+    """Said out loud when one message held several things to confirm and only the first is shown."""
+    if len(found) < 2 or all(p["kind"] == "expenses" for p in found):
+        return ""
+    return (f"ℹ️ Your message had {len(found)} things to save; this is the first. "
+            "Send the others one per message.")
 
 
 # ── The model loop ──────────────────────────────────────────────────────────────────────────
@@ -394,7 +411,7 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
         rows = expenses.recent(ctx.session, n)
         return {"text_reply": recent_text(rows), "count": len(rows)}
     if name == tools.SEARCH_EXPENSES:
-        return _search(ctx, args)
+        return _search(ctx, args, message)
     if name == tools.DELETE_LAST_EXPENSE:
         if ctx.confirm_writes:
             target = expenses.newest_own_open(ctx.session, ctx.sender)
@@ -609,7 +626,7 @@ def list_notes(ctx: Context, message: str, runs: list[ToolRun], asking: str | No
     return "\n\n".join(notes)
 
 
-def _search(ctx: Context, args: dict) -> dict:
+def _search(ctx: Context, args: dict, message: str = "") -> dict:
     dates = {}
     for key in ("date_from", "date_to"):
         raw = str(args.get(key) or "").strip()
@@ -632,6 +649,17 @@ def _search(ctx: Context, args: dict) -> dict:
         amount_above=_money(args.get("amount_above")), amount_below=_money(args.get("amount_below")),
         text=args.get("text") or None, date_from=dates.get("date_from"), date_to=dates.get("date_to"))
     total = expenses.total(rows)
+    text = (args.get("text") or "").strip()
+    if not rows and text:
+        # Live bug 29-10: "kesar na daag ni dava no kharcho?" -> "No entries found." while a
+        # ₹850 copper entry existed. The honest answer names what was searched, and the journal
+        # offers the link from the problem to the product.
+        reply = f"💰 No expense with \"{text}\" in its description or shop."
+        hop = farm_tools.expense_hop(ctx, message)
+        if hop:
+            return {"text_reply": f"{reply}\n\n{hop[0]}", "buttons": hop[1], "count": 0,
+                    "total": total}
+        return {"text_reply": reply, "count": 0, "total": total}
     return {"text_reply": search_text(rows, total), "count": len(rows), "total": total}
 
 
@@ -663,7 +691,9 @@ def search_text(rows: list[ExpenseView], total: Decimal) -> str:
 
 
 def _templates(runs: list[ToolRun]) -> str:
-    parts = [r.result["text_reply"] for r in runs if r.ok and r.result.get("text_reply")]
+    # The same answer once: the model calling a tool three times must not show it three times.
+    parts = list(dict.fromkeys(r.result["text_reply"] for r in runs
+                               if r.ok and r.result.get("text_reply")))
     return "\n\n".join(parts)
 
 
@@ -681,13 +711,19 @@ def _follow_up(ctx: Context, waiting: pending.Pending | None, is_slot: bool, use
     if any(r.needs == "plant" for r in runs) and not is_slot:
         pending.drop(s, chat, who, pending.AMOUNT)
         pending.drop(s, chat, who, pending.TIME)
+        unknown = next((r.result["unknown_plant"] for r in runs if r.result.get("unknown_plant")), "")
         pending.put(s, chat, who, pending.PLANT, {"message": user_text, "tries_left": MAX_TRIES,
-                                                  "photo": ctx.photo, "source": ctx.source})
-        return ("\n\n".join(p for p in (reply, farm_tools.ASK_PLANT) if p),
-                farm_tools.plant_buttons(farm.plants(s)))
+                                                  "photo": ctx.photo, "source": ctx.source,
+                                                  "unknown": unknown})
+        admin = ctx.sender.role == "admin"
+        ask = (farm_tools.unknown_plant_text(unknown, admin) if unknown else farm_tools.ASK_PLANT)
+        return ("\n\n".join(p for p in (reply, ask) if p),
+                farm_tools.plant_buttons(farm.plants(s), unknown if admin else ""))
     text = _follow_up_text(ctx, waiting, is_slot, user_text, runs, reply)
-    if waiting and waiting.kind == pending.PLANT and pending.get(s, chat, who, pending.PLANT):
-        return text, farm_tools.plant_buttons(farm.plants(s))
+    still = waiting and waiting.kind == pending.PLANT and pending.get(s, chat, who, pending.PLANT)
+    if still:
+        unknown = still.payload.get("unknown", "") if ctx.sender.role == "admin" else ""
+        return text, farm_tools.plant_buttons(farm.plants(s), unknown)
     return text, None
 
 

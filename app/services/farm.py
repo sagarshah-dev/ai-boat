@@ -126,6 +126,16 @@ def resolve_plants(known: list[PlantInfo], text: str) -> PlantMatch | None:
     return None
 
 
+def add_plant(session: Session, name: str, on: date) -> Plant:
+    """A new plant is a row, not a deploy. Its own name is its first alias, so the next note
+    that says it finds it."""
+    p = Plant(plant=name.strip().title(), variety="", aliases=[name.strip().lower()], count=0,
+              count_date=on)
+    session.add(p)
+    session.flush()
+    return p
+
+
 def single_plant(match: PlantMatch | None) -> str | None:
     """The one plant a question is about, or None (none named, several, or the whole farm)."""
     if match and not match.all_farm and len(match.plants) == 1:
