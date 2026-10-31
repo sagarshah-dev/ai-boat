@@ -77,3 +77,60 @@ def test_callback_data_over_64_bytes_is_a_programming_error():
     c, _ = make([])
     with pytest.raises(ValueError):
         c.send_message(5, "x", buttons=[[("label", "ક" * 30)]])  # 90 bytes in UTF-8
+
+
+# ── A send that may already have arrived is never sent again (live bug, 29-10-2026) ─────────
+
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout("no answer"), httpx.WriteTimeout("half sent"),
+                                 httpx.RemoteProtocolError("dropped"), httpx.ReadError("reset")])
+def test_send_message_is_not_resent_when_it_may_have_arrived(exc):
+    c, calls = make([exc, (200, {"ok": True, "result": {}})])
+    assert c.send_message(5, "hi") is False
+    assert len(calls) == 1
+
+
+def test_send_message_reply_that_is_not_json_is_not_resent():
+    def handler(request):
+        return httpx.Response(200, content=b"<html>gateway</html>")
+    calls = []
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: (calls.append(r), handler(r))[1]))
+    assert TelegramClient("T", http=http).send_message(5, "hi") is False
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("exc", [httpx.ConnectError("down"), httpx.ConnectTimeout("slow"),
+                                 httpx.PoolTimeout("busy")])
+def test_send_message_is_retried_when_it_never_left(exc):
+    c, calls = make([exc, (200, {"ok": True, "result": {}})])
+    assert c.send_message(5, "hi") is True
+    assert len(calls) == 2
+
+
+def test_send_photo_is_not_resent_after_read_timeout():
+    c, calls = make([httpx.ReadTimeout("no answer"), (200, {"ok": True, "result": {}})])
+    assert c.send_photo(5, "FILE") is False
+    assert len(calls) == 1
+
+
+def test_send_document_is_not_resent_after_read_timeout():
+    c, calls = make([httpx.ReadTimeout("no answer"), (200, {"ok": True})])
+    assert c.send_document(5, "r.pdf", b"%PDF") is False
+    assert len(calls) == 1
+
+
+def test_send_document_retried_when_it_never_left():
+    c, calls = make([httpx.ConnectError("down"), (200, {"ok": True})])
+    assert c.send_document(5, "r.pdf", b"%PDF") is True
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.edit_message_text(5, 9, "x"),
+    lambda c: c.clear_buttons(5, 9),
+    lambda c: c.answer_callback("cb"),
+])
+def test_edits_and_button_answers_are_still_retried_after_read_timeout(call):
+    # Repeating an edit changes nothing the user can see, so these keep their retries.
+    c, calls = make([httpx.ReadTimeout("no answer"), (200, {"ok": True, "result": True})])
+    assert call(c) is True
+    assert len(calls) == 2

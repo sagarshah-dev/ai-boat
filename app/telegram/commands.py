@@ -181,6 +181,9 @@ def handle_text(env: Env, text: str) -> list[Out]:
     #    two lines, which is one message.
     env.show_typing()
     ctx = env.ctx()
+    notes = farm_ui.several_notes(cmd)
+    if notes:
+        return [Reply(farm_ui.several_notes_reply(notes))]
     if "\n" in cmd and not farm_ui.multi_line_to_ai(cmd):
         return [Reply(_batch(ctx, cmd))]
     return _reply(agent.handle(ctx, cmd))
@@ -360,20 +363,38 @@ def handle_button(env: Env, data: str) -> list[Out]:
     m = _MENU.match(data)
     if m:
         return _menu_item(env, m.group(1))
+    m = farm_tools.HOP.match(data)
+    if m:
+        return farm_tools.hop_answer(env.ctx(), int(m.group(1)))
     return []
 
 
 def _plant_button(env: Env, name: str) -> list[Out]:
     """Valid only while this person's note is waiting for its plant; the name must be a known
     plant, so a forged button can't inject text."""
-    if not pending.get(env.session, env.chat_id, env.sender.id, pending.PLANT):
+    waiting = pending.get(env.session, env.chat_id, env.sender.id, pending.PLANT)
+    if not waiting:
         return [Reply(NOTHING_WAITING)]
     known = farm.plant_names(farm.plants(env.session))
+    if name == "+add":
+        return _add_plant(env, waiting.payload.get("unknown", ""))
     if name == "all":
         return handle_text(env, "badha chhod")
     if name in known:
         return handle_text(env, name)
     return []
+
+
+def _add_plant(env: Env, name: str) -> list[Out]:
+    """➕ under "not in the plant list": admin only (a plant list is farm history), then the
+    waiting note continues with the new plant as if it had been typed."""
+    if env.sender.role != "admin":
+        return [Reply("Only the admin can add a plant.")]
+    if not name:
+        return []
+    farm.add_plant(env.session, name, today(env.settings.timezone))
+    return [Reply(f"✅ Added \"{name.title()}\" to the plant list (count 0 — set it later)."),
+            *handle_text(env, name)]
 
 
 def _advice_as_message(env: Env) -> list[Out]:

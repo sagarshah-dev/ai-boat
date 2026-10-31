@@ -306,8 +306,11 @@ def source_line(cited: list[str], hits: list[Hit]) -> str:
 
 def fallback_list(hits: list[Hit]) -> str:
     """Used when the model's answer fails a check: the notes themselves, word for word."""
-    rows = sorted(hits, key=lambda h: h.meta.get("date") or "", reverse=True)[:MAX_HITS]
-    return "Matching notes:\n" + "\n".join("• " + original_text(h.text)[:220] for h in rows)
+    # Best match first, the order the search ranked them in. Live Q5 (29-10): sorted by date, the
+    # one note that answered the question came last, under two unrelated ones.
+    rows = hits[:MAX_HITS]
+    return "Matching notes (best match first):\n" + "\n".join("• " + original_text(h.text)[:220]
+                                                             for h in rows)
 
 
 @dataclass
@@ -368,6 +371,28 @@ def answer(llm: LLM, question: str, found: Found) -> Answer:
     photos = [(h.meta["photo"], f"{h.id} · {h.meta.get('date_str', '')}")
               for h in hits if h.id in cited and h.meta.get("photo")]
     return Answer("found", "\n".join(lines), cited, photos[:3], missing)
+
+
+def how_line(found: Found, f: Filters, status: str = "ok") -> str:
+    """How this answer was found, in one line the user can read: the concept, the filters, and
+    what was loosened. Built by code from the search itself, never written by the model."""
+    if found.mode == "basic":
+        head = "📒 How: exact words only (keyword search) — meaning search is down right now"
+    else:
+        n = len(found.hits)
+        head = (f"🔎 How: RAG — your words searched by meaning + exact words, "
+                f"{n} note{'s' if n != 1 else ''} passed the match check")
+    kept = [x for x in (f.plant, f.variety, f.activity) if x]
+    if f.date_from or f.date_to:
+        kept.append(f"{f.date_from:%d-%m-%Y} to {f.date_to:%d-%m-%Y}" if f.date_from and f.date_to
+                    else "dates")
+    if kept and not found.relaxed:
+        head += " · filter: " + ", ".join(kept)
+    if found.relaxed:
+        head += f" · {found.relaxed}"
+    if status == "fallback":
+        head += " · notes shown word for word (the AI summary failed a check)"
+    return head
 
 
 def basic_reply(found: Found) -> str:

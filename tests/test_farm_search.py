@@ -136,7 +136,7 @@ def test_answer_with_sources_from_the_rows(bot, notes):
     r = search(bot, "aam ma daag padya, pehla shu karyu?", (
         "Copper spray pachhi 10 divas ma daag band thaya. Pehla neem spray be vaar karyo hato.",
         [f"J-{notes[2]}", f"J-{notes[0]}", f"J-{notes[1]}"]))
-    assert "Copper spray pachhi 10 divas" in r and "found by meaning" in r
+    assert "Copper spray pachhi 10 divas" in r and "🔎 How: RAG" in r
     assert f"Sagar's note {fmt_date(D3)} (J-{notes[2]})" in r
     assert f"Biren's note {fmt_date(D2)} (J-{notes[1]})" in r
     p = answer_prompt(bot)
