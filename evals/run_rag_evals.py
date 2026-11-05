@@ -61,12 +61,14 @@ def seed(llm) -> dict:
 
 
 def filters_for(q: str):
-    """Exactly what the search tool derives from a question (plant only; no dates in cases)."""
+    """Exactly what the search tool derives from a question (plant + variety; no dates in cases)."""
     from app.db.session import session_scope
     from app.services import farm, rag
     with session_scope() as s:
-        plant = farm.single_plant(farm.resolve_plants(farm.plants(s), q))
-    return rag.Filters(plant=plant or "")
+        match = farm.resolve_plants(farm.plants(s), q)
+    plant = farm.single_plant(match)
+    variety = match.variety if plant and match.variety not in ("", farm.ALL) else ""
+    return rag.Filters(plant=plant or "", variety=variety)
 
 
 def main() -> None:
@@ -75,7 +77,7 @@ def main() -> None:
     from app.db.session import session_scope
     from app.integrations.gemini import GeminiLLM
     from app.services import rag
-    from app.services.rag_index import keyword_terms
+    from app.services.rag_index import keyword_terms, stopwords
     settings = get_settings()
     min_score = float(os.getenv("RAG_MIN_SCORE") or settings.rag_min_score)
     rec = harness.Recorder(GeminiLLM(settings.gemini_api_key, settings.gemini_model,
@@ -119,7 +121,7 @@ def main() -> None:
         with session_scope() as s:
             # Calibration uses the raw candidate scores, BEFORE the threshold.
             qvec = rec.embed([q], task="RETRIEVAL_QUERY")[0]
-            vec_hits, _ = rag.candidates(s, qvec, keyword_terms(q), f)
+            vec_hits, _ = rag.candidates(s, qvec, keyword_terms(q, stopwords(s)), f)
             found = rag.retrieve(s, rec, q, f, min_score, alt=case.get("q_en", ""))
         right = max((h.sim for h in vec_hits if h.id in want), default=None)
         wrong = max((h.sim for h in vec_hits if h.id not in want), default=None)
@@ -132,7 +134,8 @@ def main() -> None:
             r_ok = True       # judged at the answer: the gate OR the model may stop it
         else:
             r_ok = all(i in ids for i in case.get("expect_ids", [])) and \
-                (not case.get("any_of") or any(i in ids for i in case["any_of"]))
+                (not case.get("any_of") or any(i in ids for i in case["any_of"])) and \
+                not any(i in ids for i in case.get("not_ids", []))   # live 05-11: noise notes
         ret_ok += r_ok
         ans = rag.answer(rec, q, found)
         low = ans.reply.lower()

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import agent, farm_tools, guards, media, meeting_tools, proposals
 from app.config import Settings
-from app.core.formatting import inr, today
+from app.core.formatting import entries, inr, today
 from app.core.replies import Document, Out, Reply
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError
@@ -266,7 +266,7 @@ def _settle(env: Env) -> list[Out]:
     report = reports.build_report(env.session, scope, today=day, now=_now(env),
                                   balance=result.balance, rows=rows)
     out.append(Document(f"settlement-{result.settlement_id}-{report.filename.split('-', 2)[-1]}",
-                        report.data, f"📄 Settlement snapshot — {report.count} entries, ₹{inr(report.total)}"))
+                        report.data, f"📄 Settlement snapshot — {entries(report.count)}, ₹{inr(report.total)}"))
     if mail.ready(env.settings):
         out.append(mail.report_email(env.settings, report, "Settlement Report", result.balance))
     return out
@@ -279,7 +279,7 @@ def _report(env: Env, cmd: str) -> list[Out]:
     if not report.count:
         return [Reply(f"📄 No entries found for {scope.label} — no PDF to send.")]
     return [Document(report.filename, report.data,
-                     f"📄 {scope.label} — {report.count} entries, ₹{inr(report.total)} total")]
+                     f"📄 {scope.label} — {entries(report.count)}, ₹{inr(report.total)} total")]
 
 
 def _email(env: Env, cmd: str) -> list[Out]:
@@ -291,7 +291,7 @@ def _email(env: Env, cmd: str) -> list[Out]:
     if not report.count:
         # The old bot mailed an empty PDF here; "report" already said "no entries". Now both do.
         return [Reply(f"📧 No entries found for {scope.label} — nothing to email.")]
-    return [Reply(f"📧 Emailing {scope.label} — {report.count} entries, ₹{inr(report.total)}…"),
+    return [Reply(f"📧 Emailing {scope.label} — {entries(report.count)}, ₹{inr(report.total)}…"),
             mail.report_email(env.settings, report, "Expense Report")]
 
 

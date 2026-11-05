@@ -1,7 +1,7 @@
 """Which emails the bot sends and what they say. Building only — sending happens after commit
 (app/integrations/email.py), and its outcome is reported in Telegram."""
 from app.config import Settings
-from app.core.formatting import inr
+from app.core.formatting import entries, inr
 from app.core.replies import Email
 from app.services.balance import Balance
 from app.services.reports import Report
@@ -27,7 +27,7 @@ def report_email(settings: Settings, report: Report, subject_prefix: str,
         body += f"\n\n{'─' * 32}\n{balance.text}"
     to = settings.recipients
     return Email(
-        subject=f"{subject_prefix} — ₹{inr(report.total)} ({report.count} entries)",
+        subject=f"{subject_prefix} — ₹{inr(report.total)} ({entries(report.count)})",
         body=body, to=to,
         attachments=((report.filename, report.data, "application/pdf"),),
         ok_note=f"📧 {subject_prefix} emailed to {', '.join(to)}.",

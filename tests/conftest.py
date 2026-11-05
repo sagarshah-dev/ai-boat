@@ -55,18 +55,20 @@ def migrated_db():
     yield
 
 
-def _seed_plants():
-    """The plants list comes from migration 0002; TRUNCATE removes it, so put it back the same
+def _migration(filename: str):
+    """Reference data comes from the migrations; TRUNCATE removes it, so put it back the same
     way production gets it (read from the migration file, not a second copy in the tests)."""
     import importlib.util
-    path = os.path.join(os.path.dirname(__file__), "..", "migrations", "versions", "0002_farm_seed.py")
-    spec = importlib.util.spec_from_file_location("seed_0002", path)
+    path = os.path.join(os.path.dirname(__file__), "..", "migrations", "versions", filename)
+    spec = importlib.util.spec_from_file_location(filename[:-3], path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.PLANTS
+    return mod
 
 
-PLANT_SEED = _seed_plants()
+PLANT_SEED = _migration("0002_farm_seed.py").PLANTS
+_M0004 = _migration("0004_stopwords_and_mango_varieties.py")
+VARIETY_SEED, STOPWORD_SEED = _M0004.VARIETIES, _M0004.STOPWORDS
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +80,14 @@ def clean_tables(migrated_db):
             conn.execute(text("INSERT INTO plants (plant, variety, aliases, count, count_date) "
                               "VALUES (:p, '', :a, :c, DATE '2026-10-19')"),
                          {"p": name, "a": aliases.split(","), "c": count})
+        for plant, variety, aliases in VARIETY_SEED:
+            conn.execute(text("INSERT INTO plants (plant, variety, aliases, count, count_date) "
+                              "VALUES (:p, :v, :a, 0, NULL)"),
+                         {"p": plant, "v": variety, "a": aliases})
+        for w in STOPWORD_SEED:
+            conn.execute(text("INSERT INTO search_stopwords (word) VALUES (:w)"), {"w": w})
+    from app.services.rag_index import reset_stopwords_cache
+    reset_stopwords_cache()
     yield
 
 

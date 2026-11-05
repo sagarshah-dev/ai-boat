@@ -13,7 +13,7 @@ from decimal import Decimal
 from fpdf import FPDF
 from sqlalchemy.orm import Session
 
-from app.core.formatting import fmt_date, inr, round_rupees
+from app.core.formatting import entries, fmt_date, inr, round_rupees
 from app.db.models import Member
 from app.services import balance as balance_service
 from app.services import expenses, members
@@ -155,7 +155,7 @@ def search_text(rows: list[ExpenseView], label: str) -> str:
     shown = newest[:20]
     more = " (newest 20 shown)" if len(rows) > 20 else ""
     return (f"📋 {label}{more}:\n\n" + "\n".join(r.line() for r in shown)
-            + f"\n\n💵 Total: ₹{inr(total)} ({len(rows)} entries)")
+            + f"\n\n💵 Total: ₹{inr(total)} ({entries(len(rows))})")
 
 
 # ── PDF ─────────────────────────────────────────────────────────────────────────────────────
@@ -246,7 +246,7 @@ def build_pdf(rows: list[ExpenseView], label: str, *, generated: datetime,
     pdf.ln(3)
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, f"Total: Rs. {inr(total)}  ({len(rows)} entries)", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, f"Total: Rs. {inr(total)}  ({entries(len(rows))})", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(110, 110, 110)
     pdf.cell(0, 5, "Blue amount = entry over Rs. 5,000", new_x="LMARGIN", new_y="NEXT")

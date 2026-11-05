@@ -44,8 +44,14 @@ def seed_knowledge(title: str, text: str, when=None, by: int = SAGAR, source: st
 
 
 def add_plant(plant: str, variety: str, aliases: str, count: int = 0):
+    """Adds the row, or replaces the aliases/count of a seeded one (migration 0004 seeds the
+    Mango varieties, so a test's own Kesar row would otherwise clash)."""
     with session_scope() as s:
-        s.add(Plant(plant=plant, variety=variety, aliases=aliases.split(","), count=count))
+        row = s.scalars(select(Plant).where(Plant.plant == plant, Plant.variety == variety)).first()
+        if row is None:
+            s.add(Plant(plant=plant, variety=variety, aliases=aliases.split(","), count=count))
+        else:
+            row.aliases, row.count = aliases.split(","), count
 
 
 def journal() -> list[JournalEntry]:

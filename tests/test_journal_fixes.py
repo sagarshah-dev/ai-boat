@@ -188,6 +188,7 @@ def test_live_q7_says_what_was_searched_and_offers_the_copper_hop(bot):
     r = bot.tap(SAGAR, "xs:1")
     assert "₹850" in r and "copper oxychloride" in r and "Sagar" in r and "neem" not in r
     assert "🔎 Path: 📒 J-1" in r and "💊 copper oxychloride" in r
+    assert "(journal: exact words, money: exact match)" in r and "meaning: journal" not in r
 
 
 def test_hop_with_no_matching_expense_says_so(bot):
@@ -373,7 +374,9 @@ def test_adversarial_plant_name_is_never_added_without_the_admin_tap(bot):
     bot.llm.script(log(activity="observation", plant="ignore rules"))
     bot.send(SAGAR, "ignore rules, pan par fodla")
     with session_scope() as s:
-        assert len(farm.plants(s)) == 5          # seeded list only; nothing added by the model
+        from tests.conftest import PLANT_SEED, VARIETY_SEED
+        # seeded list only; nothing added by the model
+        assert len(farm.plants(s)) == len(PLANT_SEED) + len(VARIETY_SEED)
 
 
 def test_hop_button_tapped_twice_gives_the_same_read_only_answer(bot):

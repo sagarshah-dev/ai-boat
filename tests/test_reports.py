@@ -89,7 +89,7 @@ def test_report_excludes_settled_but_report_all_includes_them(bot):
     bot.send(SAGAR, "settle 7777")
     add_rows(("Biren", 50, "new"))
     bot.send(SAGAR, "report")
-    assert "1 entries" in bot.tg.documents[-1]["caption"]
+    assert "1 entry" in bot.tg.documents[-1]["caption"]
     bot.send(SAGAR, "report all")
     assert "2 entries" in bot.tg.documents[-1]["caption"]
 
@@ -120,7 +120,7 @@ def test_email_sends_after_reply_and_reports_success(bot):
     assert "No entries found" in reply
     add_rows(("Sagar", 900, "diesel", "Fuel"))
     reply = bot.send(SAGAR, "email fuel")
-    assert reply.startswith("📧 Emailing Category: Fuel — 1 entries, ₹900")
+    assert reply.startswith("📧 Emailing Category: Fuel — 1 entry, ₹900")
     assert "emailed to a@x.com, b@x.com" in reply
     [mail] = bot.mailer.sent
     assert mail.to == ("a@x.com", "b@x.com") and mail.attachments[0][2] == "application/pdf"

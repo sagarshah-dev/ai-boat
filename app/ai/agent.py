@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import farm_tools, guards, meeting_tools, proposals, tools
 from app.config import Settings
-from app.core.formatting import fmt_date, inr, parse_date, to_rupees
+from app.core.formatting import entries, fmt_date, inr, parse_date, to_rupees
 from app.core.replies import Buttons, Out
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError, ToolCall
@@ -677,17 +677,17 @@ def undo_text(v: ExpenseView) -> str:
 def recent_text(rows: list[ExpenseView]) -> str:
     if not rows:
         return "No entries yet."
-    return f"🕐 Last {len(rows)} entries:\n\n" + "\n".join(r.line() for r in rows)
+    return f"🕐 Last {entries(len(rows))}:\n\n" + "\n".join(r.line() for r in rows)
 
 
 def search_text(rows: list[ExpenseView], total: Decimal) -> str:
     if not rows:
         return "No entries found."
     shown = rows[:MAX_ROWS]
-    head = (f"📋 {len(rows)} entries" + (f" (newest {MAX_ROWS} shown)" if len(rows) > MAX_ROWS else "")
+    head = (f"📋 {entries(len(rows))}" + (f" (newest {MAX_ROWS} shown)" if len(rows) > MAX_ROWS else "")
             + ":\n\n")
     # Total is computed by code over ALL matches, not just the ones shown.
-    return head + "\n".join(r.line() for r in shown) + f"\n\n💵 Total: ₹{inr(total)} ({len(rows)} entries)"
+    return head + "\n".join(r.line() for r in shown) + f"\n\n💵 Total: ₹{inr(total)} ({entries(len(rows))})"
 
 
 def _templates(runs: list[ToolRun]) -> str:

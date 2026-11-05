@@ -208,6 +208,21 @@ of the schema. Same function-calling pattern — no second parser in code.
 **Cost:** the model can still send fewer items than written, so the code check of the list
 stays. A few more tokens per call for the larger schema.
 
+## 25. Search stop words and plant varieties are data; each model call gets the time left
+
+**Chosen:** the keyword side's stop words moved from `rag_index.STOP` (code) to the
+`search_stopwords` table, read with a 5-minute cache. Mango varieties (Kesar, Rajapuri, …) are
+rows in `plants` (count 0, so the Mango total stays 150). In the Gemini wrapper each attempt is
+given the time left in the budget (minimum 8 s) instead of a fixed 20 s, and every failure is
+logged with its kind, code and detail.
+**Why:** live, 05-11-2026, "Kesar par daag che, have shu karu?" returned 5 notes. "have" was a
+search word, so a Dadam note ("have drip roj 30 min") passed the lower keyword gate; "Kesar"
+was not a known plant, so no plant filter was applied. The AI summary failed, and the log said
+only `LlmError`. A 25 s RAG budget with fixed 20 s calls also meant no retry and no fallback
+model was ever possible after one failed call.
+**Cost:** a new filler word or variety is an SQL row, not a deploy, but someone has to add it.
+A shorter last attempt can time out where 20 s would not have; below 8 s no call is started.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

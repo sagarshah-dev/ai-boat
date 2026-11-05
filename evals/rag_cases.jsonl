@@ -20,3 +20,6 @@
 {"id": "termite-romanized-typo", "q": "udhay mate shu karyu hatu?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
 {"id": "termite-hindi", "q": "दीमक के लिए क्या किया था?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "must": ["chlorpyrifos"], "not_found": false}
 {"id": "termite-gujarati-script", "q": "ઉધઈ માટે શું કર્યું હતું?", "q_en": "What was done for termites?", "expect_ids": ["J-3"], "not_found": false}
+{"id": "live-0511-kesar-daag-have", "q": "Kesar par daag che, have shu karu?", "expect_ids": ["J-6"], "not_ids": ["J-13"], "must": ["copper"], "not_found": false}
+{"id": "live-0511-neem-ketlu", "q": "neem spray ketlu karwanu", "expect_ids": ["J-4"], "must": ["50 ml"], "not_found": false}
+{"id": "variety-rajapuri-daag", "q": "rajapuri par daag padya, pehla shu karyu?", "expect_ids": ["J-6"], "not_ids": ["J-13"], "must": ["copper"], "not_found": false}

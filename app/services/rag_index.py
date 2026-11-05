@@ -11,6 +11,7 @@ model twice (free-tier quota), and a note whose text changed is re-embedded on t
 """
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, select, update
@@ -18,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.text import strip_marks
-from app.db.models import JournalEntry, Knowledge, RagChunk
+from app.db.models import JournalEntry, Knowledge, RagChunk, SearchStopword
 from app.integrations.gemini import LLM
 from app.services import farm
 from app.services.farm import Doc
@@ -88,22 +89,34 @@ def translate_knowledge(session: Session, llm: LLM, row_ids: set[int] | None = N
 
 # ── Store ───────────────────────────────────────────────────────────────────────────────────
 
-# Words that appear in almost every question carry no signal ("shu karyu hatu?").
-STOP = {"ma", "na", "ni", "nu", "no", "ne", "thi", "to", "ke", "k", "ane", "che", "chhe", "hatu",
-        "hati", "hata", "shu", "su", "kyare", "kem", "ketlu", "ketla", "kevi", "rite", "karyu",
-        "karyo", "kari", "karvu", "karvanu", "pehla", "pela", "aavi", "aavyu", "aavya", "tyare",
-        "jyare", "mate", "par", "pan", "e", "a", "the", "is", "was", "what", "when", "how",
-        "did", "we", "do", "for", "of", "in", "on", "and", "or", "it", "last", "time",
-        "please", "batavo", "kaho", "aapo"}
+# Words that appear in almost every question carry no signal ("have shu karu?"). They live in
+# the search_stopwords table (seeded by migration 0004). Live 05-11: "have" was not in the old
+# in-code list, so "Kesar par daag che, have shu karu?" matched a Dadam note that says "have drip".
+STOP_TTL_S = 300
+_stop_cache: dict = {"words": frozenset(), "at": None}
 _TOKEN_RE = re.compile(r"\d+(?::\d+)+|[^\W_]+")
 
 
-def keyword_terms(text: str) -> list[str]:
+def stopwords(session: Session) -> frozenset[str]:
+    """Read once per few minutes, not per question: the list changes rarely."""
+    now = time.monotonic()
+    if _stop_cache["at"] is None or now - _stop_cache["at"] > STOP_TTL_S:
+        _stop_cache["words"] = frozenset(
+            w.lower() for w in session.scalars(select(SearchStopword.word)))
+        _stop_cache["at"] = now
+    return _stop_cache["words"]
+
+
+def reset_stopwords_cache() -> None:
+    _stop_cache.update(words=frozenset(), at=None)
+
+
+def keyword_terms(text: str, stop: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """Search terms for the keyword side. NPK grades like 0:52:34 stay ONE term: split into
     0, 52, 34 they would also match 13:0:45 — exactly the confusion keyword search prevents."""
     terms: list[str] = []
     for t in _TOKEN_RE.findall(strip_marks(text).lower()):
-        if t in STOP or (len(t) < 2 and not t.isdigit()):
+        if t in stop or (len(t) < 2 and not t.isdigit()):
             continue
         if t not in terms:
             terms.append(t)
