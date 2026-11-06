@@ -34,6 +34,11 @@ def round_rupees(value: Decimal | int | float) -> int:
     return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def entries(n: int) -> str:
+    """'1 entry', '3 entries'. Live 31-10: the bot said '1 entries'."""
+    return f"{n} entry" if n == 1 else f"{n} entries"
+
+
 def inr(value: Decimal | int | float) -> str:
     """Indian digit grouping, whole rupees: 112412 -> '1,12,412'."""
     n = round_rupees(value)

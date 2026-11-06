@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import delete
 
 from app.config import Settings, get_settings
-from app.core.formatting import inr
+from app.core.formatting import entries, inr
 from app.db.models import PendingAction, ProcessedUpdate
 from app.db.session import session_scope
 from app.integrations.email import Mailer
@@ -102,10 +102,10 @@ def send_report(settings: Settings, tg: TelegramClient, mailer: Mailer, today: d
         bal = balance.compute(s) if with_balance else None
     if not report.count:
         return f"no entries for {scope.label}"
-    caption = f"📄 {title} — {report.count} entries, ₹{inr(report.total)}"
+    caption = f"📄 {title} — {entries(report.count)}, ₹{inr(report.total)}"
     if mail.ready(settings):
         if mailer.send(mail.report_email(settings, report, title, bal)):
-            return f"emailed {report.count} entries"
+            return f"emailed {entries(report.count)}"
         # Not hidden: the report still reaches people, and the failure is said out loud.
         if chat:
             tg.send_document(chat, report.filename, report.data, caption)

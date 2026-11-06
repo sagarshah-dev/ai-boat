@@ -115,12 +115,12 @@ def grounded_words(field: str, message: str, min_len: int = 3) -> bool:
     return any(w in msg for w in words(field) if len(w) >= min_len)
 
 
-def topic_words(known: list[farm.PlantInfo], message: str) -> list[str]:
+def topic_words(known: list[farm.PlantInfo], message: str, stop: frozenset[str]) -> list[str]:
     """What a question is ABOUT beyond plant, activity and period: 'udhai', 'neem'. These decide
     the lookup, so a topic is never silently dropped and the search never widens to everything."""
     alias_words = {w for p in known for a in p.aliases for w in a.split()}
     out = []
-    for t in rag_index.keyword_terms(message):
+    for t in rag_index.keyword_terms(message, stop):
         if (t.isdigit() or len(t) < 3 or t in _NOT_TOPIC or t in _ACTIVITY_WORDS
                 or t in _PERIOD_WORDS or t in alias_words or datetime_signal(t)):
             continue
@@ -484,7 +484,7 @@ def _activities(ctx: "Context", known, args: dict, message: str) -> dict:
     activity = str(args.get("activity") or "").strip().lower() or None
     if activity not in farm.ACTIVITIES:
         activity = None
-    topic = topic_words(known, message)
+    topic = topic_words(known, message, rag_index.stopwords(ctx.session))
     product = str(args.get("product") or "").strip()
     if product and not grounded_words(product, message):
         product = ""       # the model's word isn't the user's; the user's own topic words decide
@@ -814,7 +814,8 @@ def expense_hop(ctx: "Context", message: str) -> tuple[str, Buttons] | None:
     """The journal note this money question is about, if its words point to exactly the notes
     that name a product. Buttons search expenses for that product."""
     known = farm.plants(ctx.session)
-    topic = [t for t in topic_words(known, message) if t not in _MONEY_WORDS]
+    topic = [t for t in topic_words(known, message, rag_index.stopwords(ctx.session))
+             if t not in _MONEY_WORDS]
     if not topic:
         return None
     match = farm.resolve_plants(known, message)
@@ -851,7 +852,7 @@ def hop_answer(ctx: "Context", entry_id: int) -> list[Out]:
         return [Reply("This button is no longer valid.")]
     rows = expenses.search(ctx.session, text=e.product)
     path = (f"🔎 Path: 📒 J-{e.id} ({e.problem or 'note'}) → 💊 {e.product} → 💰 expenses "
-            "(meaning: journal, money: exact match)")
+            "(journal: exact words, money: exact match)")
     if not rows:
         first = e.product.split()[0]
         rows = expenses.search(ctx.session, text=first) if first.lower() != e.product.lower() else []

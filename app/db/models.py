@@ -206,6 +206,14 @@ class Knowledge(Base):
     text_english: Mapped[str] = mapped_column(Text, server_default="")
 
 
+class SearchStopword(Base):
+    """Words that carry no topic in a question ("have", "shu", "karu"). Data, not code: a new
+    filler word is a row, and the keyword search stops matching notes on it."""
+    __tablename__ = "search_stopwords"
+
+    word: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
 class RagChunk(Base):
     """Search index for journal + knowledge (old Neon table farm_chunks, same columns).
 

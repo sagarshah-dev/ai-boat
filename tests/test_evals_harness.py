@@ -76,7 +76,7 @@ def test_rag_seed_keeps_note_ids_and_indexes(ev):
         e = JournalEntry(entry_date=run_rag_evals.TODAY, plant="Mango", activity="spray", added_by=1)
         s.add(e)
         s.flush()
-        assert e.id == 13
+        assert e.id == 1 + max(n["ID"] for n in run_rag_evals.load("rag_notes.jsonl") if "ID" in n)
 
 
 def test_may_save_is_neither_wrong_nor_missed(ev):
@@ -93,3 +93,12 @@ def test_failed_run_lists_what_the_model_called(ev):
                                               "paid_by": "Sagar"}]))
     ok, wrong, problems = run(ev, case([("Sagar", "500 diesel")], saved=[]))
     assert not ok and wrong and problems[-1] == "model: add_expenses[500 diesel/Sagar]"
+
+
+def test_eval_reset_keeps_the_seeded_stop_words(ev):
+    """The evals must search with the same stop words as production, not an empty list."""
+    from sqlalchemy import text
+    from app.db.session import session_scope
+    run_rag_evals.seed(ev[2])
+    with session_scope() as s:
+        assert s.scalar(text("SELECT count(*) FROM search_stopwords WHERE word IN ('have','karu')")) == 2

@@ -118,13 +118,13 @@ class Telegram:
 
 
 def reset(keep_plants: bool = True) -> dict:
-    """Empty every table (the plants list from migration 0002 stays) and add the three owners.
-    Returns {name: member id}."""
+    """Empty every table (the reference data seeded by migrations — plants, search stop words —
+    stays) and add the three owners. Returns {name: member id}."""
     from sqlalchemy import text
     from app.db.models import Base, Member
     from app.db.session import get_engine, session_scope
     names = ", ".join(t.name for t in Base.metadata.sorted_tables
-                      if not (keep_plants and t.name == "plants"))
+                      if not (keep_plants and t.name in ("plants", "search_stopwords")))
     with get_engine().begin() as conn:
         conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
     with session_scope() as s:

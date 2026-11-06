@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.formatting import parse_date
 from app.integrations.gemini import LLM, LlmError
 from app.services import farm
-from app.services.rag_index import keyword_terms, vec_literal
+from app.services.rag_index import keyword_terms, stopwords, vec_literal
 
 log = logging.getLogger(__name__)
 
@@ -204,7 +204,8 @@ def retrieve(session: Session, llm: LLM, question: str, f: Filters, min_score: f
     if alt.strip() and alt.strip().lower() != question.strip().lower():
         queries.append(alt.strip()[:300])
     trace: dict = {"queries": queries, "steps": []}
-    terms = [keyword_terms(q) for q in queries]
+    stop = stopwords(session)
+    terms = [keyword_terms(q, stop) for q in queries]
     try:
         qvecs = [llm.embed([q], task="RETRIEVAL_QUERY")[0] for q in queries]
     except LlmError as err:
@@ -337,7 +338,9 @@ def answer(llm: LLM, question: str, found: Found) -> Answer:
             if not isinstance(form, dict):
                 raise ValueError("answer is not an object")
         except (LlmError, ValueError) as err:
-            log.warning("rag answer failed", extra={"fields": {"error": type(err).__name__}})
+            log.warning("rag answer failed", extra={"fields": {
+                "error": type(err).__name__, "kind": getattr(err, "kind", ""),
+                "detail": str(err)[:300]}})
             return Answer("fallback", fallback_list(hits), [h.id for h in hits])
         text_ = str(form.get("answer") or "").strip()
         cited_raw = [str(c).strip() for c in (form.get("cited_ids") or [])]

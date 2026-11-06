@@ -22,6 +22,8 @@ from google.genai import types
 log = logging.getLogger(__name__)
 
 CALL_TIMEOUT_S = 20
+# A call given less time than this mostly times out, so it is not started at all.
+MIN_ATTEMPT_S = 8
 RETRY_WAITS_S = (1, 3)
 RETRYABLE_CODES = {429, 500, 502, 503, 504}
 
@@ -170,17 +172,25 @@ class GeminiChat:
         last: Exception | None = None
         for model in self._models:
             for attempt in range(len(RETRY_WAITS_S) + 1):
-                if self._clock() + CALL_TIMEOUT_S > self._deadline:
-                    raise LlmError(error_kind(last) if last else "timeout", "time budget used up")
+                # Each attempt gets the time that is LEFT, not a fixed 20 s. With a fixed 20 s, a
+                # 25 s budget (RAG answer) could never retry or reach the fallback model: one
+                # failed call and the budget check stopped everything (live 05-11, LlmError only).
+                left = self._deadline - self._clock()
+                if left < MIN_ATTEMPT_S:
+                    raise self._failed(model, last, "time budget used up")
+                config = self._config
+                if left < CALL_TIMEOUT_S:
+                    config = config.model_copy(update={
+                        "http_options": types.HttpOptions(timeout=int(left * 1000))})
                 try:
                     resp = self._client.models.generate_content(
-                        model=model, contents=self._contents, config=self._config)
+                        model=model, contents=self._contents, config=config)
                     self.model_used = model
                     return resp
                 except Exception as err:  # noqa: BLE001 — classified below, re-raised as LlmError
                     last = err
                     if not _retryable(err):
-                        raise LlmError(error_kind(err), str(err)) from err
+                        raise self._failed(model, err) from err
                     if error_kind(err) == "timeout" and model != self._models[-1]:
                         log.warning("gemini timeout, moving to next model", extra={"fields": {"model": model}})
                         break
@@ -189,7 +199,18 @@ class GeminiChat:
                             "model": model, "code": getattr(err, "code", None), "attempt": attempt + 1}})
                         self._sleep(RETRY_WAITS_S[attempt])
         assert last is not None
-        raise LlmError(error_kind(last), str(last)) from last
+        raise self._failed(self._models[-1], last) from last
+
+    @staticmethod
+    def _failed(model: str, err: Exception | None, why: str = "") -> LlmError:
+        """Log WHY before giving up. Callers log only 'LlmError'; on 05-11 that hid whether it
+        was a timeout, the quota or a bad request, and the fix had to wait for a guess."""
+        kind = error_kind(err) if err else "timeout"
+        detail = why or str(err)
+        log.warning("gemini call failed", extra={"fields": {
+            "model": model, "kind": kind, "code": getattr(err, "code", None),
+            "error": type(err).__name__ if err else "", "detail": detail[:300]}})
+        return LlmError(kind, detail)
 
 
 @dataclass
@@ -238,6 +259,6 @@ class GeminiLLM:
                     break
                 except Exception as err:  # noqa: BLE001 — classified, re-raised as LlmError
                     if not _retryable(err) or attempt == len(RETRY_WAITS_S):
-                        raise LlmError(error_kind(err), str(err)) from err
+                        raise GeminiChat._failed(self.embed_model, err) from err
                     time.sleep(RETRY_WAITS_S[attempt])
         return out
