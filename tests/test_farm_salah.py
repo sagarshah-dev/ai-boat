@@ -388,3 +388,70 @@ def test_old_save_button_while_trees_are_asked_does_not_break_the_plan(bot, farm
     plan_ready(bot, "Kesar par mor kala che. Spray plan banao.", trees=None)
     assert "First send the number of trees" in bot.tap(SAGAR, "fs:save")
     assert "500 ml" in bot.send(SAGAR, "100")
+
+
+# ── 11-11 live: "chhelle kyare paani aapyu? e divase majuri ketli?" ────────────────────────
+
+WATER_Q = "Chhelle kyare paani aapyu? E divase majuri no kharch ketlo thayo?"
+
+
+@pytest.fixture
+def watered(bot):
+    day = ago(1)
+    seed(dict(date=ago(9), activity="irrigation", note="drip thi paani aapyu"),
+         dict(date=day, activity="irrigation", note="Mango ne drip thi paani aapyu, 2 kalak"))
+    sync(bot.llm)
+    add_rows(("Lalo", 500, "majuri"), when=day)
+    add_rows(("Sagar", 200, "diesel"), when=day)
+    add_rows(("Biren", 900, "majuri"), when=ago(9))
+    return day
+
+
+def test_same_day_for_watering_counts_only_the_expense_asked_about(bot, watered):
+    from app.core.formatting import fmt_date
+    bot.llm.script(salah("same_day", topic="paani", expense_words="majuri"), graded(1, 2))
+    r = bot.send(SAGAR, WATER_Q)
+    d = fmt_date(watered)
+    assert f"📒 Watering — {d} (J-2)" in r                    # the newest watering, by name
+    assert f"💰 Majuri expenses on {d}:" in r
+    assert "• #1 — ₹500 — majuri — Lalo" in r and "💵 Total: ₹500" in r
+    assert "diesel" not in r and "₹900" not in r
+    assert "(1 other expense that day — ask without the word to see all)" in r
+
+
+def test_expense_word_the_user_did_not_write_is_dropped(bot, watered):
+    # The model adds "diesel"; the user never wrote it -> no filter, every expense of the day.
+    bot.llm.script(salah("same_day", topic="paani", expense_words="diesel"), graded(1, 2))
+    r = bot.send(SAGAR, "Chhelle kyare paani aapyu? E divase kharch ketlo thayo?")
+    assert "₹500 — majuri" in r and "₹200 — diesel" in r and "💵 Total: ₹700" in r
+
+
+def test_expense_word_with_nothing_that_day_says_so_and_points_to_the_rest(bot, watered):
+    bot.llm.script(salah("same_day", topic="paani", expense_words="khatar"), graded(1, 2))
+    r = bot.send(SAGAR, "Chhelle kyare paani aapyu? E divase khatar no kharch?")
+    assert "💰 No khatar expense written on" in r
+    assert "(2 other expenses that day" in r
+
+
+def test_routing_rules_name_the_observation_and_the_watering_shape():
+    from app.ai import farm_tools
+    rules = farm_tools.SYSTEM_RULES
+    assert "limbu na pan pila padya che" in rules and "never a search" in rules
+    assert "e divase majuri ketli thai" in farm_salah.SPEC.description
+    assert "expense_words" in farm_salah.SPEC.parameters["properties"]
+    acts = next(s for s in farm_tools.specs() if s.name == farm_tools.ACTIVITIES_Q)
+    assert "that is farm_salah" in acts.description
+
+
+def test_lookup_heading_has_no_search_words(bot, watered):
+    bot.llm.script(call("get_farm_activities", activity="irrigation", last_only=True))
+    r = bot.send(SAGAR, "Chhelle kyare drip thi paani aapyu?")
+    first = r.splitlines()[0]
+    assert first.startswith("📒 Last Watering") and "J-2" in r
+    assert "paani" not in first and "drip" not in first and "/" not in first
+
+
+def test_lookup_not_found_names_what_was_searched(bot):
+    bot.llm.script(call("get_farm_activities", product="termite"))
+    r = bot.send(SAGAR, "termite kyare karyu?")
+    assert r.startswith("📒 No farm note found") and "for: termite" in r

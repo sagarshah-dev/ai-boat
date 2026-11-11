@@ -31,3 +31,7 @@
 {"id": "salah-e3-same-day-expenses", "text": "Je divase Kesar par copper chhantyu, e divase biju kai kharch thayo?", "tool": "farm_salah"}
 {"id": "salah-not-written-plan", "text": "Farmer plan: mor aave tyare pehla hexaconazole 1 ml per litre chhantvu, 15 divas pachhi fari", "tool": "save_farm_advice"}
 {"id": "salah-not-single-lookup", "text": "Kesar ma chhelle kyare spray karyu?", "tool": "get_farm_activities"}
+{"id": "salah-water-then-labour", "text": "Chhelle kyare paani aapyu? E divase majuri no kharch ketlo thayo?", "tool": "farm_salah"}
+{"id": "salah-fertilizer-same-day", "text": "Je divase khatar nakhyu, e divase biju kai kharch thayo?", "tool": "farm_salah"}
+{"id": "observation-mango-spots", "text": "aamba na pan par daag dekhay che", "tool": "log_farm_activity"}
+{"id": "observation-question-is-search", "text": "limbu na pan pila padya che, shu karu?", "tool": "search_farm_notes"}
