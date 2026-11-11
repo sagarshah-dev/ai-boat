@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.ai import agent, farm_tools, guards, media, meeting_tools, proposals
+from app.ai import agent, farm_salah, farm_tools, guards, media, meeting_tools, proposals
 from app.config import Settings
 from app.core.formatting import entries, inr, today
 from app.core.replies import Document, Out, Reply
@@ -119,6 +119,9 @@ def handle_text(env: Env, text: str) -> list[Out]:
     # 3. A waiting preview gets exactly one answer. Anything else drops it and is handled as a
     #    new message — an ignored preview must never leave someone stuck.
     answered = _answer_preview(env, raw)
+    if answered is not None:
+        return answered
+    answered = _answer_salah(env, raw)
     if answered is not None:
         return answered
     if _GENERAL.match(raw) and pending.get(s, chat_id, sender.id, pending.GENERAL):
@@ -230,6 +233,55 @@ def _answer_preview(env: Env, raw: str) -> list[Out] | None:
     if getattr(hook, "on_other_text", None):
         return hook.on_other_text(env.ctx(), p, raw)
     return None
+
+
+def _answer_salah(env: Env, raw: str) -> list[Out] | None:
+    """A paused Farm Salah task takes only what it asked for: the number of trees after "how
+    many trees?", or yes / no while the plan waits. Anything else is a new message and the plan
+    keeps waiting (24 h) — "100 tea" typed meanwhile is an expense, never a tree count."""
+    w = pending.get(env.session, env.chat_id, env.sender.id, pending.SALAH)
+    wait = w.payload.get("waiting", "") if w else ""
+    if not wait:
+        return None
+    if wait in ("trees", "edit"):
+        n = farm_salah.trees_from_reply(raw)
+        if n is None:
+            return None
+        return _salah(env, n if wait == "trees" else {"action": "trees", "trees": n})
+    if guards.YES.match(raw):
+        return _salah(env, {"action": "save"})
+    if guards.NO.match(raw):
+        return _salah(env, {"action": "cancel"})
+    return None
+
+
+def _salah(env: Env, value) -> list[Out]:
+    """Resume the graph inside a savepoint: a failure leaves no half-saved plan behind."""
+    env.show_typing()
+    nested = env.session.begin_nested()
+    try:
+        r = farm_salah.resume(env.ctx(), value)
+        nested.commit()
+    except Exception:  # noqa: BLE001 — nothing half-applied stays; the user is told plainly
+        nested.rollback()
+        log.exception("farm salah resume failed")
+        return [Reply("⚠️ That could not be done, so nothing was changed. Please ask again.")]
+    return [Reply(r["text_reply"], r.get("buttons"))]
+
+
+_SALAH_BUTTON = re.compile(r"^fs:(save|edit|no)$")
+
+
+def _salah_button(env: Env, action: str) -> list[Out]:
+    """✅ / ✏️ / ❌ under a plan. Found by chat AND member, so only the asker's plan moves."""
+    wait = farm_salah.waiting(env.ctx())
+    if wait == "trees":
+        return [Reply("🌳 First send the number of trees, e.g. 60.")]
+    if wait not in ("approve", "edit"):
+        return [Reply(farm_salah.EXPIRED)]
+    if action == "edit":
+        return [Reply(farm_salah.ask_edit(env.ctx())["text_reply"])]
+    return _salah(env, {"action": "save" if action == "save" else "cancel"})
 
 
 def _apply(env: Env, p: dict, pick: int | None) -> list[Out]:
@@ -366,6 +418,12 @@ def handle_button(env: Env, data: str) -> list[Out]:
     m = farm_tools.HOP.match(data)
     if m:
         return farm_tools.hop_answer(env.ctx(), int(m.group(1)))
+    m = _SALAH_BUTTON.match(data)
+    if m:
+        return _salah_button(env, m.group(1))
+    m = farm_salah.PLAN_BUTTON.match(data)
+    if m:
+        return [Reply(farm_salah.plan_answer(env.ctx(), int(m.group(1)), m.group(2) == "y"))]
     return []
 
 

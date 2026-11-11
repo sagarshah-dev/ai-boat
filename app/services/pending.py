@@ -22,6 +22,7 @@ GENERAL = "general"        # a farm search found nothing; the 💡 General advic
 FARM_PHOTO = "farm_photo"  # a farm photo without a caption, waiting for its one line
 FARM_MODE = "farm_mode"    # 🌱 tapped in the menu: the next photo is a farm note
 ADVICE_MODE = "advice_mode"  # 📚 tapped in the menu: the next text / voice note is advice
+SALAH = "salah"            # a 🌱 Farm Salah graph paused for this person (24 h): thread id + what it waits for
 
 TTL = timedelta(minutes=2)
 

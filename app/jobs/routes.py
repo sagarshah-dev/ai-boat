@@ -33,6 +33,8 @@ KEEP_UPDATES = timedelta(days=7)
 # Daily tasks of other features. Each gets (settings, tg, llm) and returns a one-line result.
 DAILY_HOOKS: list[tuple[str, Callable[[Settings, TelegramClient, LLM], str]]] = [
     ("farm_follow_ups", farm_jobs.follow_ups),
+    ("plan_reminders", farm_jobs.plan_reminders),
+    ("salah_cleanup", farm_jobs.salah_cleanup),
     ("search_sync", farm_jobs.search_sync),
     ("bot_commands", farm_jobs.bot_commands),
 ]

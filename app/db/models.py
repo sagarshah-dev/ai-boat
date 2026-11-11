@@ -29,8 +29,10 @@ EMBED_DIM = 768  # gemini-embedding-001 at 768 dims, same as the old bot's index
 
 ROLES = ("admin", "owner", "guest")
 STATUSES = ("pending", "active", "removed")
+# "planned": saved by Farm Salah after ✅ — decided, not done yet. It becomes "spray" when the
+# 2-day reminder is answered "done", so "when did we last spray?" never counts a plan.
 ACTIVITIES = ("plantation", "fertilizer", "spray", "treatment", "irrigation", "pruning",
-              "observation", "harvest", "dead", "replant", "other")
+              "observation", "harvest", "dead", "replant", "other", "planned")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:

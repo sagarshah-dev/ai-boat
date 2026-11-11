@@ -223,6 +223,36 @@ model was ever possible after one failed call.
 **Cost:** a new filler word or variety is an SQL row, not a deploy, but someone has to add it.
 A shorter last attempt can time out where 20 s would not have; below 8 s no call is started.
 
+## 26. Farm Salah: LangGraph for tasks where step two needs step one's answer
+
+**Chosen:** a new tool, `farm_salah`, runs a LangGraph `StateGraph` (`app/ai/farm_salah.py`):
+understand → journal → dose → calc → approve, or journal → expense, or straight to answer when
+nothing usable was found. The agent's model picks the tool and fills need / topic / trees; code
+grounds them in the user's words. In the graph, Gemini does two small jobs (which candidate notes
+are about the SAME problem; reading the dose out of the farmer's advice, both numbers checked
+against that advice). Which note worked (its Result), the arithmetic, the expense lookup and the
+reply are code. A plan is saved only after the asker's ✅ (`interrupt()`); the paused graph is
+checkpointed in Postgres (`langgraph-checkpoint-postgres`, tables made by migration 0005) through
+the request's own connection, so the checkpoint, the journal row and the pending question commit
+or roll back together. The plan waits 24 hours (`pending.SALAH`, keyed by chat AND member: only
+the asker can approve). ✏️ changes the number of trees and the graph goes back to `calc` only.
+A saved plan is a `planned` journal row; 2 days later the daily job asks "was it done?", and
+"done" turns it into a spray, which then gets the usual 7-day result check. LangChain is not
+used: the nodes call our own Gemini client.
+**Why:** live baseline 06-11 and 11-11-2026 (0/3). "Which medicine worked, and when did we buy
+it?": the free agent searched expenses for the word "dava" instead of the medicine it had just
+found, and on the same data the next time did not search expenses at all. "On the day we sprayed
+copper, what else did we spend?": the second half was dropped, because the loop ends early when a
+tool returns a ready template. "Make a spray plan for 100 trees": notes were listed, no dose, no
+amount, and "100 trees" was reported as "not written in the notes". All three need a fixed order
+and step one's answer handed to step two — an edge and a state field, not the model's choice.
+**Cost:** two new dependencies (langgraph, langgraph-checkpoint-postgres) and four library tables.
+Checkpoints are written once per run (`durability="exit"`): step-by-step writes come from a
+background thread, and on the shared connection they raced the request's commit (1 test run in
+~100). Two extra Gemini calls for a plan, one for the other two tasks. The worked/not-worked
+decision reads the label code wrote at the start of Result (✅ / ❌ / ➖); a result typed in SQL
+without it counts as "no result". Dose edits and plan cost are not in this version.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

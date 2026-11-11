@@ -76,6 +76,9 @@ def clean_tables(migrated_db):
     names = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with get_engine().begin() as conn:
         conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        # LangGraph's checkpoints (migration 0005) are not in models.py; a paused plan from one
+        # test must not be resumable in the next.
+        conn.execute(text("TRUNCATE checkpoints, checkpoint_blobs, checkpoint_writes"))
         for name, aliases, count in PLANT_SEED:
             conn.execute(text("INSERT INTO plants (plant, variety, aliases, count, count_date) "
                               "VALUES (:p, '', :a, :c, DATE '2026-10-19')"),

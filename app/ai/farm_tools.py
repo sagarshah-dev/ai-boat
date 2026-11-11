@@ -203,7 +203,8 @@ def _s(type_: str, description: str = "", **extra) -> dict:
 
 
 def specs() -> list[ToolSpec]:
-    acts = list(farm.ACTIVITIES)
+    # "planned" is written only by Farm Salah after ✅, never chosen by the model.
+    acts = [a for a in farm.ACTIVITIES if a != "planned"]
     return [
         ToolSpec(LOG,
                  "PROPOSE saving something that was DONE or SEEN on the farm: planting, spraying, "
@@ -228,11 +229,13 @@ def specs() -> list[ToolSpec]:
                      "date_to": _s("STRING", "End date for a range like '2 thi 8 oct'. Empty otherwise."),
                  }, required=["activity"])),
         ToolSpec(ADVICE,
-                 "PROPOSE saving ADVICE, a PLAN or a general RULE for the farm — something to follow, "
-                 "not something done on a particular day. E.g. 'watering plan: plantation pachhi "
-                 "pehla athvadiye roj paani...', 'farmer kahe che phool aave tyare 0:52:34 aapvu'. "
-                 "Saved in the user's own words after they tap Save. If it says what WAS done "
-                 "('aaje paani aapyu'), use log_farm_activity instead.",
+                 "PROPOSE saving ADVICE, a PLAN or a general RULE for the farm that the user WROTE "
+                 "out — something to follow, not something done on a particular day. E.g. "
+                 "'watering plan: plantation pachhi pehla athvadiye roj paani...', 'farmer kahe "
+                 "che phool aave tyare 0:52:34 aapvu'. Saved in the user's own words after they "
+                 "tap Save. If it says what WAS done ('aaje paani aapyu'), use log_farm_activity "
+                 "instead. If the user ASKS for a plan to be made ('spray plan banao'), that is "
+                 "farm_salah, not this.",
                  _s("OBJECT", properties={
                      "title": _s("STRING", "A short title in English, at most 6 words."),
                  }, required=["title"])),
@@ -291,8 +294,10 @@ SYSTEM_RULES = (
     "on the farm -> log_farm_activity (and also add_expenses only if money was spent). Exact "
     "questions (when, how many times, which product, how many plants) -> get_farm_activities / "
     "get_plant_counts. Questions answered by past experience or the farmer's advice -> "
-    "search_farm_notes. Never answer a farm question from your own knowledge, and never invent a "
-    "plant, product, dose, time or date. "
+    "search_farm_notes. A request to MAKE a plan, or a question whose second part needs the "
+    "first part's answer (which medicine worked AND when it was bought; what was spent on the day "
+    "something was done) -> farm_salah. Never answer a farm question from your own knowledge, "
+    "and never invent a plant, product, dose, time or date. "
 )
 
 
