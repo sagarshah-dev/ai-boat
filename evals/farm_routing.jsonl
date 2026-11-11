@@ -25,3 +25,9 @@
 {"id": "live-unknown-plant-dadam", "text": "18-Oct: Dadam na fal ma tirad padi, pani aniyamit hatu, have drip roj 30 min karyu", "tool": "log_farm_activity"}
 {"id": "live-0511-kesar-daag-have", "text": "Kesar par daag che, have shu karu?", "tool": "search_farm_notes"}
 {"id": "live-0511-neem-ketlu", "text": "neem spray ketlu karwanu", "tool": "search_farm_notes"}
+{"id": "salah-e1-plan", "text": "Kesar na 100 zhad par mor kala che. Spray plan banao.", "tool": "farm_salah"}
+{"id": "salah-e1-plan-no-trees", "text": "Kesar par mor kala che, spray plan banao", "tool": "farm_salah"}
+{"id": "salah-e2-medicine-then-purchase", "text": "Kesar par mor kala padya tyare kai dava kaam kari, ane e dava chhelle kyare kharidi?", "tool": "farm_salah"}
+{"id": "salah-e3-same-day-expenses", "text": "Je divase Kesar par copper chhantyu, e divase biju kai kharch thayo?", "tool": "farm_salah"}
+{"id": "salah-not-written-plan", "text": "Farmer plan: mor aave tyare pehla hexaconazole 1 ml per litre chhantvu, 15 divas pachhi fari", "tool": "save_farm_advice"}
+{"id": "salah-not-single-lookup", "text": "Kesar ma chhelle kyare spray karyu?", "tool": "get_farm_activities"}

@@ -26,11 +26,17 @@ def _url() -> str:
     return url
 
 
+def _ours(obj, name, type_, reflected, compare_to) -> bool:
+    """LangGraph's checkpoint tables (migration 0005) belong to the library, not to models.py:
+    the model-vs-migration check must not report them as tables to drop."""
+    return not (type_ == "table" and reflected and str(name).startswith("checkpoint"))
+
+
 def run_migrations_online() -> None:
     engine = make_engine(_url())
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata,
-                          compare_server_default=True)
+                          compare_server_default=True, include_object=_ours)
         with context.begin_transaction():
             context.run_migrations()
     engine.dispose()

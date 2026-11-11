@@ -35,6 +35,7 @@ about Telegram, so another channel (WhatsApp, a web page) can reuse the services
 | Feature 5 | Farm journal + RAG search, follow-ups, /menu | ✅ |
 | Feature 6 | AI evals (real model) + production-like test run | ✅ |
 | Feature 7 | Cloud Run deploy | ✅ (continuous, from `main`) |
+| Feature 8 | 🌱 Farm Salah — LangGraph: plan with approval, journal → expense hand-offs | ✅ |
 
 ## Access
 
@@ -72,6 +73,28 @@ a missing dose or time is asked once. Exact questions (`humic chhelle kyare aapy
 `ketla chhod che?`) are answered from the rows; experience questions (`pehla daag padya tyare shu
 karyu?`) are searched by meaning and answered with the notes they came from. A treatment gets a
 "how did it go?" after 7 days.
+
+**🌱 Farm Salah (LangGraph).** For tasks where one answer feeds the next step:
+`Kesar na 100 zhad par mor kala che. Spray plan banao.` → the treatment that worked (from the
+journal results), the dose (from the farmer's advice), the amount (code), then **✅ Save plan /
+✏️ Change trees / ❌ Cancel** — the plan waits 24 hours, only for the person who asked.
+`...kai dava kaam kari, ane e dava chhelle kyare kharidi?` → the medicine, then its purchase.
+`Je divase copper chhantyu, e divase biju kai kharch thayo?` → the date, then that day's
+expenses. A saved plan is asked about 2 days later ("was it done?").
+
+```mermaid
+graph TD
+  understand --> journal
+  journal -.-> dose
+  journal -.-> expense
+  journal -.-> answer
+  dose -.-> calc
+  dose -.-> answer
+  calc --> approve
+  approve -.->|✏️ trees| calc
+  approve -.-> answer
+  expense --> answer
+```
 
 Money is never worded by the AI: every reply carrying an amount comes from a fixed template, and
 an amount is saved only if it is written in the message (`tea by sagar` is asked, not guessed).
@@ -122,11 +145,13 @@ app/
   telegram/         webhook.py (entry, access), commands.py (command words, photo, voice,
                     buttons), farm_ui.py (menu, routing rules), client.py
   ai/               agent.py (model loop + gates), guards.py, tools.py, proposals.py
-                    (preview -> yes), media.py (photo / voice), meeting_tools.py, farm_tools.py
+                    (preview -> yes), media.py (photo / voice), meeting_tools.py, farm_tools.py,
+                    farm_salah.py (LangGraph: plan / hand-off tasks, Postgres checkpoints)
   services/         members, expenses, balance, settlements, pending, reports, mail,
                     meetings, farm (journal, plants, advice), rag_index, rag (search + answer)
   integrations/     gemini.py (retries, fallback, embeddings), email.py, calendar.py
-  jobs/             routes.py (POST /jobs/daily), farm_jobs.py (follow-ups, search sync)
+  jobs/             routes.py (POST /jobs/daily), farm_jobs.py (follow-ups, plan reminders,
+                    search sync, cleanup of abandoned plans)
 migrations/         Alembic schema versions
 scripts/            dev_polling.py (local), set_webhook.py (after deploy)
 tests/              pytest, real Postgres

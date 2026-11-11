@@ -28,7 +28,7 @@ OWN_NOTE_HOURS = 48       # "undo farm note" reaches back this far, own notes on
 ACTIVITY_LABEL = {"plantation": "Plantation", "fertilizer": "Fertilizer", "spray": "Spray",
                   "treatment": "Treatment", "irrigation": "Watering", "pruning": "Pruning",
                   "observation": "Observation", "harvest": "Harvest", "dead": "Plants died",
-                  "replant": "Replanted", "other": "Other"}
+                  "replant": "Replanted", "other": "Other", "planned": "Planned (not done yet)"}
 OUTCOME_LABEL = {"worked": "✅ Worked", "partly": "➖ Partly", "not_worked": "❌ Did not work"}
 
 # "badha aamba" = every mango; "badha chhod" = every plant on the farm.
@@ -282,6 +282,30 @@ def followups_due(session: Session, today: date, days: int = 7) -> list[JournalE
         JournalEntry.entry_date <= today - timedelta(days=days),
         JournalEntry.entry_date >= today - timedelta(days=30)).order_by(JournalEntry.id))
     return list(rows)
+
+
+PLAN_REMINDER_DAYS = 2      # owner's choice (11-11-2026): ask 2 days after a plan was saved
+
+
+def plans_due(session: Session, today: date, days: int = PLAN_REMINDER_DAYS) -> list[JournalEntry]:
+    """Farm Salah plans saved `days`+ days ago (at most 30), not asked about yet."""
+    rows = session.scalars(select(JournalEntry).where(
+        JournalEntry.activity == "planned", JournalEntry.follow_up == "",
+        JournalEntry.entry_date <= today - timedelta(days=days),
+        JournalEntry.entry_date >= today - timedelta(days=30)).order_by(JournalEntry.id))
+    return list(rows)
+
+
+def plan_done(session: Session, jid: int, day: date) -> JournalEntry | None:
+    """The plan was carried out: it becomes a spray ON THAT DAY, with no follow-up yet — so the
+    normal 7-day "how is it now?" question asks for its result, like any spray."""
+    e = session.get(JournalEntry, jid)
+    if e is None or e.activity != "planned":
+        return None
+    e.activity, e.entry_date, e.follow_up, e.indexed_at = "spray", day, "", None
+    e.note = (e.note + f" · Done on {fmt_date(day)}").strip(" ·")
+    session.flush()
+    return e
 
 
 def mark_followup(session: Session, jid: int, state: str) -> None:
