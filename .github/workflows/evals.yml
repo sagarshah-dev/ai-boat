@@ -54,7 +54,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Which Gemini key
-        run: echo "Gemini key used: $EVAL_KEY_SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: 'echo "Gemini key used - $EVAL_KEY_SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"'
       - name: Chat evals
         if: inputs.suite != 'farm'
         env:
