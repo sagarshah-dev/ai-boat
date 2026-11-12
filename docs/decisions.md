@@ -268,6 +268,16 @@ other expenses that day were left out. (4) The lookup heading showed the search 
 suggested the expense half had been looked at. The heading is now plant + activity only; the
 words appear only in the "not found" line.
 
+**Follow-up 2 (12-11-2026, live).** The watering question now reached the graph but found no
+note: "paani" is an activity word, which this app never uses as a search word (the kind of work
+is the activity column), and the graph had no activity field; the relevance check also spoke
+only of problems and products. `farm_salah` now takes `activity` (checked against the app's list)
+and treats notes of that activity as candidates, and the check accepts "the same kind of farm
+work". The unit test had passed because its note repeated the question's words and its model
+answer was scripted: test data must look like live data. Evals now use `GEMINI_EVAL_API_KEY`
+(a key from a separate Google project, so they never use up the live bot's daily quota) and
+fall back to the bot's key only if it is missing; the run summary says which key was used.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

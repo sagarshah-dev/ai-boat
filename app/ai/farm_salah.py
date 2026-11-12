@@ -80,6 +80,10 @@ SPEC = ToolSpec(
         "topic_en": {"type": "STRING", "description": "The same topic in plain English."},
         "trees": {"type": "INTEGER",
                   "description": "Number of trees, only if the user wrote a number of trees."},
+        "activity": {"type": "STRING", "enum": [a for a in farm.ACTIVITIES if a != "planned"],
+                     "description": "The kind of farm work the question is about, if it names one: "
+                                    "'paani aapyu' -> irrigation, 'khatar nakhyu' -> fertilizer, "
+                                    "'spray/chhantyu' -> spray. Empty for a problem ('mor kala')."},
         "expense_words": {"type": "STRING",
                           "description": "same_day only: the kind of expense asked about, in the "
                                          "user's words ('majuri', 'diesel'). Empty when the user "
@@ -112,6 +116,7 @@ class State(TypedDict, total=False):
     variety: str
     topic: str
     topic_en: str
+    activity: str                 # irrigation / spray / fertilizer... ("" = not named)
     trees: int | None
     notes: list[Note]             # relevant notes, newest first
     dava: str                     # the product that worked (newest ✅)
@@ -168,11 +173,16 @@ def ground(known, args: dict, message: str) -> dict:
             trees = t
     except (TypeError, ValueError):
         pass
+    # Words like "paani" / "khatar" are not search words in this app (farm_tools._ACTIVITY_WORDS):
+    # the kind of work is the activity column. The model names it; code keeps it only if it is a
+    # real activity, so a typo can't empty the search.
+    activity = str(args.get("activity") or "").strip().lower()
+    activity = activity if activity in farm.ACTIVITIES and activity != "planned" else ""
     # An expense filter the user did not write would hide money: keep only the words they did.
     kind = " ".join(w for w in words(str(args.get("expense_words") or "")) if w in msg_words)
     return {"need": need, "plant": plant, "variety": variety, "topic": topic,
             "topic_en": " ".join(str(args.get("topic_en") or "").split())[:120], "trees": trees,
-            "expense_words": kind[:40]}
+            "expense_words": kind[:40], "activity": activity}
 
 
 def understand(state: State, runtime: Runtime[Deps]) -> dict:
@@ -184,9 +194,10 @@ def understand(state: State, runtime: Runtime[Deps]) -> dict:
 # ── A: journal — candidates by exact words + meaning, then an AI relevance check ────────────
 
 GRADE_RULES = (
-    "You check farm notes for ONE problem. For each note, decide whether it is about the SAME "
-    "problem as the question (same plant part and same symptom, or the same product the question "
-    "names). A shared word is not enough: black spots on leaves is not black flowers. "
+    "You check farm notes against ONE question. For each note, decide whether it is about what "
+    "the question asks: the SAME problem (same plant part and same symptom), the same product it "
+    "names, or the same kind of farm work it names (watering, fertilizer, pruning...). A shared "
+    "word is not enough: black spots on leaves is not black flowers. "
     "Return the ids of the notes that are about it, exactly as written. Return [] if none."
 )
 GRADE_SCHEMA = {"type": "OBJECT", "properties": {
@@ -217,6 +228,10 @@ def candidates(ctx: "Context", state: State) -> list:
     rows = [e for e in farm.query(s, plant=plant, variety=variety) if e.activity != "planned"]
     terms = farm_tools.topic_words(farm.plants(s), state["topic"], rag_index.stopwords(s))
     exact = [e for e in rows if terms and all(farm.mentions(e, t) for t in terms)]
+    # "Chhelle kyare paani aapyu?": "paani" is dropped as a search word (it is an activity), so
+    # without this a watering note is found by neither words nor meaning (live, 12-11-2026).
+    act = state.get("activity", "")
+    by_kind = [e for e in rows if act and e.activity == act][:MAX_CANDIDATES]
     f = rag.Filters(plant=plant or "", variety=variety or "", journal_only=True)
     found = rag.retrieve(s, ctx.llm, state["topic"], f, farm_tools._min_score(ctx),
                          alt=state.get("topic_en", ""))
@@ -230,7 +245,7 @@ def candidates(ctx: "Context", state: State) -> list:
             if e and e.activity != "planned" and (not plant or farm.matches_plant(e, plant)):
                 meant.append(e)
     seen, out = set(), []
-    for e in exact + meant:
+    for e in exact + by_kind + meant:
         if e.id not in seen:
             seen.add(e.id)
             out.append(e)
