@@ -253,6 +253,21 @@ background thread, and on the shared connection they raced the request's commit 
 decision reads the label code wrote at the start of Result (✅ / ❌ / ➖); a result typed in SQL
 without it counts as "no result". Dose edits and plan cost are not in this version.
 
+**Follow-up (11-11-2026, live test after merge).** Three routing gaps, one heading bug:
+(1) "limbu na pan pila padya che" went to search instead of a note to save — the new "plan /
+problem" wording pulled observations away from log_farm_activity (eval and live, 2/2). Owner's
+decision: a plain statement of a problem seen is a note; the rules and both tool descriptions
+now say so, and a question about it ("..., shu karu?") is still a search. (2) "Chhelle kyare
+paani aapyu? E divase majuri ketli?" never reached the graph: the description had only the
+copper example. It now describes the SHAPE (a farm date the expense question depends on) with
+watering and fertilizer examples. Lesson: the graph guarantees the order once a question
+reaches it; routing into it is still the model's choice and needs its own eval cases.
+(3) same_day takes `expense_words` ("majuri"), kept only if the user wrote it, and says how many
+other expenses that day were left out. (4) The lookup heading showed the search words
+("Watering · divase / majuri / kharch / ketlo / thayo"): they are not the user's words and
+suggested the expense half had been looked at. The heading is now plant + activity only; the
+words appear only in the "not found" line.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

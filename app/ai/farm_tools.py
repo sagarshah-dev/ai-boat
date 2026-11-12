@@ -214,7 +214,10 @@ def specs() -> list[ToolSpec]:
                  "fodla, neem spray karyu', 'south side 10 lemon ropya'. Copy only what the user "
                  "wrote: never invent a plant, product, dose, time or date. Leave a field empty if "
                  "it was not said — the system asks for what matters. If the message is ONLY money "
-                 "spent, use add_expenses instead. Not for a plan or advice — use save_farm_advice.",
+                 "spent, use add_expenses instead. Not for a plan or advice — use save_farm_advice. "
+                 "A plain STATEMENT of a problem seen, with no question in it, is a note to save "
+                 "here, even when nothing was done yet: 'limbu na pan pila padya che', 'aamba par "
+                 "daag dekhay che'.",
                  _s("OBJECT", properties={
                      "activity": _s("STRING", "What happened. 'observation' for a problem only seen, "
                                               "'dead' for plants that died.", enum=acts),
@@ -257,7 +260,9 @@ def specs() -> list[ToolSpec]:
                  "EXACT lookup in the farm journal: when something was last done, or a list of what "
                  "was done. Use for 'humic chhelle kyare aapyu?', 'October ma shu shu karyu?', "
                  "'lemon ma kyare spray karyo?'. Pass date_from/date_to (DD-MM-YYYY) for any period. "
-                 "Not for 'what did we do when leaves had spots' — that is search_farm_notes.",
+                 "Not for 'what did we do when leaves had spots' — that is search_farm_notes. If "
+                 "the same message also asks what was SPENT on that day ('chhelle kyare paani "
+                 "aapyu? e divase majuri ketli?'), that is farm_salah, not this.",
                  _s("OBJECT", properties={
                      "plant": _s("STRING", "Plant as the user named it. Empty for all."),
                      "activity": _s("STRING", "Only this activity, if asked.", enum=acts),
@@ -275,7 +280,9 @@ def specs() -> list[ToolSpec]:
         ToolSpec(SEARCH,
                  "MEANING search in the farm notes and the farmer's advice, for questions answered "
                  "by past experience or advice: 'pehla daag padya tyare shu karyu?', 'fungus mate "
-                 "shu kaam karyu?', 'nava chhod ne paani ketlu aapvu?'. Pass the user's question "
+                 "shu kaam karyu?', 'nava chhod ne paani ketlu aapvu?'. Only for a QUESTION: a "
+                 "statement of what is seen ('limbu na pan pila padya che') is log_farm_activity. "
+                 "Pass the user's question "
                  "unchanged as query. Add plant / dates / activity only if the user said them.",
                  _s("OBJECT", properties={
                      "query": _s("STRING", "The user's question, unchanged."),
@@ -291,12 +298,14 @@ def specs() -> list[ToolSpec]:
 SYSTEM_RULES = (
     "FARM JOURNAL: log_farm_activity, save_farm_advice, record_treatment_result and "
     "delete_last_farm_note only PROPOSE — never say a farm note is saved. Something done or seen "
-    "on the farm -> log_farm_activity (and also add_expenses only if money was spent). Exact "
+    "on the farm -> log_farm_activity (and also add_expenses only if money was spent); a "
+    "statement of a problem seen, with no question in it ('limbu na pan pila padya che'), is "
+    "such a note, never a search. Exact "
     "questions (when, how many times, which product, how many plants) -> get_farm_activities / "
     "get_plant_counts. Questions answered by past experience or the farmer's advice -> "
     "search_farm_notes. A request to MAKE a plan, or a question whose second part needs the "
-    "first part's answer (which medicine worked AND when it was bought; what was spent on the day "
-    "something was done) -> farm_salah. Never answer a farm question from your own knowledge, "
+    "first part's answer (which medicine worked AND when it was bought; WHEN something was done "
+    "AND what was spent that day, for any farm work: spray, watering, fertilizer) -> farm_salah. Never answer a farm question from your own knowledge, "
     "and never invent a plant, product, dose, time or date. "
 )
 
@@ -526,15 +535,19 @@ def activities_text(ctx: "Context", *, plant=None, variety=None, several=(), act
                 meant = [e for e in meant if any(farm.matches_plant(e, p) for p in several)]
             rows, source = meant, SRC_HYBRID
 
+    # The heading is the user's own frame (plant, activity), never the search words: those come
+    # from the model and can be the other half of the question ("divase / majuri / kharch"),
+    # which reads as noise and suggests that half was looked at. They go in the "not found" line.
     what = " · ".join(x for x in [
         farm.plant_label(list(several)) if several else farm.plant_label([plant], variety or "") if plant else "",
-        ACTIVITY_LABEL.get(activity, "") if activity else "", " / ".join(topic)] if x) or "farm"
+        ACTIVITY_LABEL.get(activity, "") if activity else ""] if x) or "farm"
     period = ""
     if df or dt:
         period = f" ({fmt_date(df) if df else '…'} to {fmt_date(dt) if dt else 'today'}"
         period += f", {note})" if note else ")"
     if not rows:
         searched = "Searched the journal by exact words" + (" and your notes by meaning" if topic else "")
+        searched += f" for: {', '.join(topic)}" if topic else ""
         why = f" ({unavailable})" if unavailable else ""
         return f"📒 No {what} note found{period}.\n{searched}{why}."
     if last_only:

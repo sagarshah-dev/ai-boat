@@ -65,9 +65,12 @@ SPEC = ToolSpec(
     "(plan) the user asks to MAKE a spray/treatment plan for a problem: 'Kesar na 100 zhad par mor "
     "kala che, spray plan banao'; (purchase) which medicine worked for a problem AND when it was "
     "bought: 'mor kala padya tyare kai dava kaam kari, ane e dava chhelle kyare kharidi?'; "
-    "(same_day) what was spent on the day something was done: 'je divase copper chhantyu, e divase "
-    "biju kai kharch thayo?'. Not for a single question about notes or expenses — use the other "
-    "tools for those. Not for saving a plan the user wrote — that is save_farm_advice.",
+    "(same_day) WHEN some farm work was done AND what was spent on that day — any work: spray, "
+    "watering, fertilizer, pruning: 'je divase copper chhantyu, e divase biju kai kharch thayo?', "
+    "'chhelle kyare paani aapyu? e divase majuri ketli thai?'. The shape matters, not the words: "
+    "a farm date that the expense question depends on. Not for a single question about notes or "
+    "expenses — use the other tools for those. Not for saving a plan the user wrote — that is "
+    "save_farm_advice.",
     {"type": "OBJECT", "properties": {
         "need": {"type": "STRING", "enum": list(NEEDS),
                  "description": "plan, purchase or same_day, as above."},
@@ -77,6 +80,10 @@ SPEC = ToolSpec(
         "topic_en": {"type": "STRING", "description": "The same topic in plain English."},
         "trees": {"type": "INTEGER",
                   "description": "Number of trees, only if the user wrote a number of trees."},
+        "expense_words": {"type": "STRING",
+                          "description": "same_day only: the kind of expense asked about, in the "
+                                         "user's words ('majuri', 'diesel'). Empty when the user "
+                                         "asks about all spending that day."},
     }, "required": ["need", "topic"]})
 
 RULES = (
@@ -87,13 +94,14 @@ RULES = (
 
 # ── State: the graph's notebook. Plain JSON values only — it is checkpointed. ──────────────
 
-class Note(TypedDict):
+class Note(TypedDict, total=False):
     id: int
     date: str
     product: str
     problem: str
     result: str
     outcome: str          # worked | partly | not_worked | ""
+    activity: str         # Watering, Spray, ... (as the journal shows it)
 
 
 class State(TypedDict, total=False):
@@ -110,6 +118,8 @@ class State(TypedDict, total=False):
     dava_note: int
     failed: list[Note]            # products that did not work: said out loud
     tarikh: str                   # date of the task (same_day), ISO
+    expense_words: str            # same_day: only expenses with this word ("majuri"); "" = all
+    kharch_that_day: int          # same_day: how many expenses that day in all
     tarikh_note: int
     dose_ml: float                # ml of product per litre of water
     litres_per_tree: float
@@ -158,8 +168,11 @@ def ground(known, args: dict, message: str) -> dict:
             trees = t
     except (TypeError, ValueError):
         pass
+    # An expense filter the user did not write would hide money: keep only the words they did.
+    kind = " ".join(w for w in words(str(args.get("expense_words") or "")) if w in msg_words)
     return {"need": need, "plant": plant, "variety": variety, "topic": topic,
-            "topic_en": " ".join(str(args.get("topic_en") or "").split())[:120], "trees": trees}
+            "topic_en": " ".join(str(args.get("topic_en") or "").split())[:120], "trees": trees,
+            "expense_words": kind[:40]}
 
 
 def understand(state: State, runtime: Runtime[Deps]) -> dict:
@@ -191,7 +204,8 @@ def outcome_of(result: str) -> str:
 
 def _note(e) -> Note:
     return {"id": e.id, "date": e.entry_date.isoformat(), "product": e.product.strip(),
-            "problem": e.problem.strip(), "result": e.result.strip(), "outcome": outcome_of(e.result)}
+            "problem": e.problem.strip(), "result": e.result.strip(), "outcome": outcome_of(e.result),
+            "activity": farm.ACTIVITY_LABEL.get(e.activity, e.activity)}
 
 
 def candidates(ctx: "Context", state: State) -> list:
@@ -381,7 +395,11 @@ def expense(state: State, runtime: Runtime[Deps]) -> dict:
     s = runtime.context.ctx.session
     if state["need"] == "same_day":
         d = date.fromisoformat(state["tarikh"])
-        rows = expenses.search(s, date_from=d, date_to=d)
+        day = expenses.search(s, date_from=d, date_to=d)
+        kind = words(state.get("expense_words", ""))
+        rows = [r for r in day if any(w in words(f"{r.description} {r.merchant}") for w in kind)] \
+            if kind else day
+        return {"kharch": _kharch(rows), "kharch_that_day": len(day), "path": _ran(state, "expense")}
     else:
         rows = expenses.search(s, text=state["dava"])
         parts = state["dava"].split()
@@ -392,9 +410,12 @@ def expense(state: State, runtime: Runtime[Deps]) -> dict:
                 rows = expenses.search(s, text=word)
                 if rows:
                     break
-    kharch = [{"id": r.id, "date": r.date.isoformat(), "amount": str(r.amount),
-               "description": r.description, "paid_by": r.paid_by} for r in rows]
-    return {"kharch": kharch, "path": _ran(state, "expense")}
+    return {"kharch": _kharch(rows), "path": _ran(state, "expense")}
+
+
+def _kharch(rows) -> list[dict]:
+    return [{"id": r.id, "date": r.date.isoformat(), "amount": str(r.amount),
+             "description": r.description, "paid_by": r.paid_by} for r in rows]
 
 
 # ── F: the reply, written by code from the state ────────────────────────────────────────────
@@ -611,17 +632,23 @@ def final_text(state: State) -> str:
         body = head(state) + "\n" + buy
     else:   # same_day
         n = next((x for x in state.get("notes", []) if x["id"] == state.get("tarikh_note")), None)
-        what = f"{n['product'] or n['problem'] or 'note'}" if n else "note"
-        rows = state.get("kharch", [])
-        lines = [f"📒 {what} — {_d(state['tarikh'])} (J-{state['tarikh_note']})"]
+        # A watering note has no product or problem: name it by what was done.
+        what = (n["product"] or n["problem"] or n.get("activity") or "note") if n else "note"
+        rows, kind, day = state.get("kharch", []), state.get("expense_words", ""), _d(state["tarikh"])
+        label = f"{kind} expenses" if kind else "Expenses"
+        lines = [f"📒 {what} — {day} (J-{state['tarikh_note']})"]
         if rows:
             total = sum(Decimal(r["amount"]) for r in rows)
-            lines.append(f"💰 Expenses on {_d(state['tarikh'])}:")
+            lines.append(f"💰 {label[:1].upper() + label[1:]} on {day}:")
             lines += [f"• #{r['id']} — ₹{inr(Decimal(r['amount']))} — {r['description']} — "
                       f"{r['paid_by']}" for r in rows]
             lines.append(f"💵 Total: ₹{inr(total)}")
         else:
-            lines.append(f"💰 No expense written on {_d(state['tarikh'])}.")
+            lines.append(f"💰 No {kind + ' ' if kind else ''}expense written on {day}.")
+        others = state.get("kharch_that_day", 0) - len(rows)
+        if kind and others > 0:
+            lines.append(f"   ({others} other expense{'s' if others > 1 else ''} that day — ask "
+                         "without the word to see all)")
         body = "\n".join(lines)
     h = how(state)
     return f"{body}\n{h}" if h else body
