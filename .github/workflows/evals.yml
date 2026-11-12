@@ -1,7 +1,9 @@
 # Runs the evals against the REAL Gemini models, on demand (they use the free-tier quota, so
 # never on every push). GitHub -> Actions -> "Evals" -> Run workflow. The report appears on the
 # run's Summary page.
-# Needs one repository secret: GEMINI_API_KEY (Settings -> Secrets and variables -> Actions).
+# Needs a repository secret (Settings -> Secrets and variables -> Actions): GEMINI_EVAL_API_KEY,
+# a key from a SEPARATE Google project. The free daily limit counts per project, so evals then
+# never use up the live bot's quota. Without it, GEMINI_API_KEY (the bot's) is used.
 # The database is a throwaway Postgres container; nothing touches Neon or Telegram.
 name: Evals
 
@@ -41,7 +43,8 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       EVAL_DATABASE_URL: postgresql://boat:boat@localhost:5432/boat_eval
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_EVAL_API_KEY || secrets.GEMINI_API_KEY }}
+      EVAL_KEY_SOURCE: ${{ secrets.GEMINI_EVAL_API_KEY != '' && 'separate eval key' || 'BOT key (shares the live quota)' }}
       EVAL_DELAY_S: ${{ inputs.delay }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +53,8 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Which Gemini key
+        run: echo "Gemini key used: $EVAL_KEY_SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Chat evals
         if: inputs.suite != 'farm'
         env:

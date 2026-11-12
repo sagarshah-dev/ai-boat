@@ -455,3 +455,36 @@ def test_lookup_not_found_names_what_was_searched(bot):
     bot.llm.script(call("get_farm_activities", product="termite"))
     r = bot.send(SAGAR, "termite kyare karyu?")
     assert r.startswith("📒 No farm note found") and "for: termite" in r
+
+
+# ── 12-11 live: the watering note was found by neither words nor meaning ────────────────────
+
+def test_watering_note_is_found_by_its_activity_when_no_search_word_is_left(bot, monkeypatch):
+    # "paani" is an activity word, so it is not a search word; the note shares no word with
+    # the question; and live, meaning search did not reach the threshold either (simulated
+    # here). Only the activity (irrigation) can find it.
+    from app.services import rag
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: rag.Found([], mode="vector"))
+    day = ago(2)
+    seed(dict(date=day, activity="irrigation", note="drip 2 kalak chalavyu"))
+    sync(bot.llm)
+    add_rows(("Lalo", 500, "majuri"), when=day)
+    bot.llm.script(salah("same_day", topic="paani", activity="irrigation", expense_words="majuri"),
+                   graded(1))
+    r = bot.send(SAGAR, WATER_Q)
+    assert "[J-1]" in prompts(bot, farm_salah.GRADE_RULES)[0]
+    assert "📒 Watering" in r and "₹500 — majuri" in r
+
+
+def test_activity_the_app_does_not_know_is_ignored(bot):
+    seed(dict(date=ago(2), activity="irrigation", note="drip 2 kalak chalavyu"))
+    sync(bot.llm)
+    bot.llm.script(salah("same_day", topic="paani", activity="swimming"), graded())
+    r = bot.send(SAGAR, WATER_Q)
+    assert "No note about" in r
+
+
+def test_relevance_check_accepts_farm_work_not_only_problems():
+    assert "same kind of farm work" in farm_salah.GRADE_RULES
+    enum = farm_salah.SPEC.parameters["properties"]["activity"]["enum"]
+    assert "irrigation" in enum and "planned" not in enum
