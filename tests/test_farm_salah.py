@@ -92,7 +92,7 @@ def test_e1_plan_uses_what_worked_the_written_dose_and_code_arithmetic(bot, farm
     assert "🧮 100 trees × 5 L = 500 L water → 500 ml hexaconazole" in r
     assert "copper" not in r
     assert "🔎 How: LangGraph — journal" in r and "farmer advice → calculation (code)" in r
-    assert buttons(bot) == farm_salah.PLAN_BUTTONS
+    assert buttons(bot) == farm_salah.PLAN_BUTTONS + [[farm_salah.NOTE_BUTTON]]
     # Nothing saved before ✅; the graph is paused in Postgres, for the asker only.
     assert len(journal()) == 3
     assert [w.payload["waiting"] for w in waiting_rows()] == ["approve"]

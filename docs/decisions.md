@@ -278,6 +278,29 @@ answer was scripted: test data must look like live data. Evals now use `GEMINI_E
 (a key from a separate Google project, so they never use up the live bot's daily quota) and
 fall back to the bot's key only if it is missing; the run summary says which key was used.
 
+## 27. Live bugs of 06-11 / 13-11-2026: ask instead of guessing, say what was not used
+
+**Chosen:**
+- A Farm Salah question that names no problem ("Kesar na 100 zhad mate plan banao") or no farm
+  work ("E divase biju kai kharch thayo?") is asked "which problem / which work?" with an
+  `interrupt()` in `understand`, like the tree count. The answer is taken only if the journal
+  contains its words; buttons offer the problems already written for that plant.
+- A dose the user writes ("2 ml thi") is reported next to the advice dose. The plan still uses
+  only a dose written in the farmer's advice.
+- Plan answers carry "📝 Save as a farm note": the same preview, and the same checks, as a typed
+  observation (owner: "Kesar par mor kala che" may be a new problem on a new plant).
+- When the model gives no amount (or one the user never wrote) and the message has exactly one
+  amount in one phrase, that amount is offered for ✅ instead of asking. "sorry" / "ok" are not
+  items.
+- The journal → expense hop runs the Farm Salah relevance check on the notes that share words;
+  "last" needs a note about the whole topic.
+- A note whose indexing failed says so, and the next search indexes it (`catch_up`), so "Saved"
+  never means "unfindable until a daily sync" that needs Cloud Scheduler.
+- Money answers have a How line; every How line has a blank line before it.
+**Why:** each was seen live (screenshots 13-11-2026; baseline doc section 8.3).
+**Cost:** one more model call for a hop (only when an expense search found nothing); a search
+may embed up to 10 late rows first.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

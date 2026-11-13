@@ -23,6 +23,7 @@ FARM_PHOTO = "farm_photo"  # a farm photo without a caption, waiting for its one
 FARM_MODE = "farm_mode"    # 🌱 tapped in the menu: the next photo is a farm note
 ADVICE_MODE = "advice_mode"  # 📚 tapped in the menu: the next text / voice note is advice
 SALAH = "salah"            # a 🌱 Farm Salah graph paused for this person (24 h): thread id + what it waits for
+SALAH_NOTE = "salah_note"  # the 📝 "save as a farm note" button under a Farm Salah plan answer (24 h)
 
 TTL = timedelta(minutes=2)
 

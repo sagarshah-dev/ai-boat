@@ -21,7 +21,7 @@
 {"id": "live-q4-when-neem", "text": "Neem oil kyare chhantyu?", "tool": "get_farm_activities"}
 {"id": "live-q5-advice-kesar", "text": "Kesar par fari daag dekhay che, have shu karu?", "tool": "search_farm_notes"}
 {"id": "live-q6-advice-chiku", "text": "Chiku par haju mealybug che, shu karu?", "tool": "search_farm_notes"}
-{"id": "live-q7-problem-cost", "text": "Kesar na daag ni dava ma kharcho ketlo thayo?", "tool": "search_expenses"}
+{"id": "live-q7-problem-cost", "text": "Kesar na daag ni dava ma kharcho ketlo thayo?", "tool": "farm_salah"}
 {"id": "live-unknown-plant-dadam", "text": "18-Oct: Dadam na fal ma tirad padi, pani aniyamit hatu, have drip roj 30 min karyu", "tool": "log_farm_activity"}
 {"id": "live-0511-kesar-daag-have", "text": "Kesar par daag che, have shu karu?", "tool": "search_farm_notes"}
 {"id": "live-0511-neem-ketlu", "text": "neem spray ketlu karwanu", "tool": "search_farm_notes"}

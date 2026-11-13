@@ -89,7 +89,8 @@ def _item_line(i: int, it: dict) -> str:
 def _expenses_preview(p: dict) -> str:
     n = len(p["items"])
     head = {"photo": f"📸 I read {n} expense{'s' if n > 1 else ''}:",
-            "voice": f"🎤 Log {'these' if n > 1 else 'this'} expense{'s' if n > 1 else ''}?"
+            "voice": f"🎤 Log {'these' if n > 1 else 'this'} expense{'s' if n > 1 else ''}?",
+            "check": "❓ Is this right? (the amount is the number you wrote)",
             }.get(p.get("source"), f"Log {n} expense{'s' if n > 1 else ''}?")
     lines = "\n".join(_item_line(i, it) for i, it in enumerate(p["items"], start=1))
     return f"{head}\n\n{lines}\n\n{FOOTER}"

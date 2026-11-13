@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.formatting import parse_date
 from app.integrations.gemini import LLM, LlmError
 from app.services import farm
-from app.services.rag_index import keyword_terms, stopwords, vec_literal
+from app.services.rag_index import catch_up, keyword_terms, stopwords, vec_literal
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +200,7 @@ def retrieve(session: Session, llm: LLM, question: str, f: Filters, min_score: f
     """The user's words AND an English version (alt): romanised matches romanised, English
     matches the stored translation. The trace is logged for every search — it is how a wrong
     answer gets debugged in two minutes (filter? threshold? model?)."""
+    catch_up(session, llm)      # a note saved while indexing failed is findable from now on
     queries = [question]
     if alt.strip() and alt.strip().lower() != question.strip().lower():
         queries.append(alt.strip()[:300])
@@ -366,11 +367,16 @@ def answer(llm: LLM, question: str, found: Found) -> Answer:
     if found.relaxed:
         lines.append(f"ℹ️ {found.relaxed[0].upper() + found.relaxed[1:]}.")
     lines.append(text_)
+    # The answer, then a blank line, then where it came from: one block read as noise on a phone
+    # (owner, 06-11-2026).
+    tail = []
     if missing:
-        lines.append(f"ℹ️ Not written in the notes: {missing}")
+        tail.append(f"ℹ️ Not written in the notes: {missing}")
     src = source_line(cited, hits)
     if src:
-        lines.append(src)
+        tail.append(src)
+    if tail:
+        lines += ["", *tail]
     photos = [(h.meta["photo"], f"{h.id} · {h.meta.get('date_str', '')}")
               for h in hits if h.id in cited and h.meta.get("photo")]
     return Answer("found", "\n".join(lines), cited, photos[:3], missing)
