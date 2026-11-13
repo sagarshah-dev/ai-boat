@@ -306,9 +306,12 @@ def test_search_wildcards_are_literal(bot):
     assert "50% advance" in reply and "500 advance" not in reply
 
 
-def test_undo_through_ai_removes_own_entry(bot):
+def test_undo_through_ai_removes_own_entry_after_yes(bot):
+    # Live 13-11-2026: "Na, 150 hata" was read as undo and the entry was gone, no question.
     add_rows(("Sagar", 300, "seed"))
     bot.llm.script(call("delete_last_expense"))
     reply = bot.send(SAGAR, "galti thai gai, kadhi nakh")
-    assert reply.startswith("↩️ Undone: #1 — ₹300 — seed")
+    assert reply.startswith("↩️ Delete this entry?\n#1 — ₹300 — seed")
+    assert len(expenses_in_db()) == 1
+    assert bot.send(SAGAR, "yes").startswith("↩️ Undone: #1 — ₹300 — seed")
     assert expenses_in_db() == []

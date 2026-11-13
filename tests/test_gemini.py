@@ -192,6 +192,7 @@ def test_real_tool_specs_convert_to_gemini_declarations(people):
     from app.integrations.gemini import _declaration
     decls = [_declaration(t) for t in expense_tools(people)]
     assert [d.name for d in decls] == ["add_expenses", "get_balances", "get_recent",
-                                       "search_expenses", "delete_last_expense"]
+                                       "search_expenses", "delete_last_expense",
+                                       "edit_last_expense"]
     item = decls[0].parameters.properties["items"].items
     assert item.properties["paid_by"].enum == (people or None)

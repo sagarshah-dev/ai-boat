@@ -111,6 +111,8 @@ class Note(TypedDict, total=False):
 
 class State(TypedDict, total=False):
     question: str
+    earlier: str                  # short-term memory: their last messages + the replies seen
+    earlier_user: str             # their previous message (for the relevance check)
     args: dict                    # what the agent's model filled in; U grounds it
     need: str
     plant: str
@@ -156,17 +158,29 @@ def _ran(state: State, node: str) -> list[str]:
 _NUM = re.compile(r"\d+")
 
 
-def ground(known, args: dict, message: str) -> dict:
+def ground(known, args: dict, message: str, earlier: str = "") -> dict:
     """Only what the user wrote survives. The plant comes from resolve_plants(message), never
     from the model; trees only if that number is in the message; the topic only if one of its
-    words is, else the message itself."""
+    words is, else the message itself.
+
+    `earlier` is the short-term memory (this person's last messages and the replies they saw):
+    a follow-up like "E divase biju kai kharch thayo?" names its subject there, not in itself.
+    The plant and the topic may come from it; a number (trees) never does."""
     need = str(args.get("need") or "").strip()
     match = farm.resolve_plants(known, message)
     plant = farm.single_plant(match) or ""
+    used_earlier = False
+    if not plant and earlier:
+        match = farm.resolve_plants(known, earlier)
+        plant = farm.single_plant(match) or ""
+        used_earlier = bool(plant)
     variety = match.variety if plant and match and match.variety not in ("", ALL) else ""
     topic = " ".join(str(args.get("topic") or "").split())[:80]
-    msg_words = set(words(message))
-    if not topic or not any(w in msg_words for w in words(topic)):
+    msg_words, old_words = set(words(message)), set(words(earlier))
+    if topic and not any(w in msg_words for w in words(topic)) and any(
+            w in old_words for w in words(topic)):
+        used_earlier = True
+    elif not topic or not any(w in msg_words for w in words(topic)):
         topic = message.strip()[:120]
     trees = None
     try:
@@ -181,10 +195,11 @@ def ground(known, args: dict, message: str) -> dict:
     activity = str(args.get("activity") or "").strip().lower()
     activity = activity if activity in farm.ACTIVITIES and activity != "planned" else ""
     # An expense filter the user did not write would hide money: keep only the words they did.
-    kind = " ".join(w for w in words(str(args.get("expense_words") or "")) if w in msg_words)
+    kind = " ".join(w for w in words(str(args.get("expense_words") or ""))
+                    if w in msg_words or w in old_words)
     return {"need": need, "plant": plant, "variety": variety, "topic": topic,
             "topic_en": " ".join(str(args.get("topic_en") or "").split())[:120], "trees": trees,
-            "expense_words": kind[:40], "activity": activity}
+            "expense_words": kind[:40], "activity": activity, "used_earlier": used_earlier}
 
 
 def has_subject(session, known, out: dict) -> bool:
@@ -203,8 +218,11 @@ def has_subject(session, known, out: dict) -> bool:
 def understand(state: State, runtime: Runtime[Deps]) -> dict:
     s = runtime.context.ctx.session
     known = farm.plants(s)
-    out = ground(known, state.get("args", {}), state["question"])
+    out = ground(known, state.get("args", {}), state["question"], state.get("earlier", ""))
     question = state["question"]
+    if out.pop("used_earlier") and state.get("earlier_user"):
+        # The relevance check reads the question: "Shu karu?" alone is about nothing.
+        question = f"{state['earlier_user']} — {question}"
     if not has_subject(s, known, out):
         # Live 13-11-2026: "Kesar na 100 zhad mate plan banao" -> 'No note about "kesar"', and
         # "E divase biju kai kharch thayo?" -> 'No note about "kharch"': the notes were there,
@@ -525,7 +543,10 @@ def start(ctx: "Context", args: dict, message: str) -> dict:
     tid = f"salah-{ctx.chat_id}-{ctx.sender.id}-{uuid.uuid4().hex[:12]}"
     clean = {k: v for k, v in args.items() if isinstance(v, (str, int, float, bool))}
     try:
-        state, wait = _invoke(ctx, tid, {"question": message.strip(), "args": clean, "path": []})
+        users = [t for role, t in ctx.recent if role == "user"]
+        state, wait = _invoke(ctx, tid, {"question": message.strip(), "args": clean, "path": [],
+                                         "earlier": ctx.recent_text[-3000:],
+                                         "earlier_user": users[-1][:300] if users else ""})
     except LlmError as err:
         return {"text_reply": _llm_failed(err)}
     return _respond(ctx, tid, state, wait)
@@ -615,7 +636,8 @@ def _topic_of(e, need: str) -> str:
 def topic_buttons(ctx: "Context", state: State, need: str) -> Buttons:
     """The problems (or, for a same-day question, the kinds of work) already in the journal for
     this plant, newest first. A tap sends the note's own words back — never the button's text."""
-    g = ground(farm.plants(ctx.session), state.get("args", {}), state.get("question", ""))
+    g = ground(farm.plants(ctx.session), state.get("args", {}), state.get("question", ""),
+               state.get("earlier", ""))
     seen, out = set(), []
     for e in farm.query(ctx.session, plant=g["plant"] or None, variety=g["variety"] or None):
         label = _topic_of(e, need) if e.activity != "planned" else ""

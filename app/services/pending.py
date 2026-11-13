@@ -53,6 +53,14 @@ def get(session: Session, chat_id: int, member_id: int, kind: str) -> Pending | 
     return Pending(kind=row.kind, payload=dict(row.payload), attempts=row.attempts)
 
 
+def exists(session: Session, chat_id: int, member_id: int, kind: str) -> bool:
+    """Is there an entry, live OR expired? Reads only: unlike get(), an expired entry is left
+    for the handler that answers it ("⌛ PIN entry timed out")."""
+    return session.scalar(select(PendingAction.id).where(
+        PendingAction.chat_id == chat_id, PendingAction.member_id == member_id,
+        PendingAction.kind == kind)) is not None
+
+
 def pop(session: Session, chat_id: int, member_id: int,
         kind: str) -> tuple[Pending | None, bool]:
     """Removes and returns the entry, and whether it had already expired. For one-shot answers
