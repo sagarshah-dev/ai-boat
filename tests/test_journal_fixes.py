@@ -176,9 +176,14 @@ def _copper_case(bot):
     bot.send(SAGAR, "neem oil 400 biren e aapya")
 
 
+def _graded(*jids):
+    import json
+    return say(json.dumps({"relevant_ids": [f"J-{j}" for j in jids]}))
+
+
 def test_live_q7_says_what_was_searched_and_offers_the_copper_hop(bot):
     _copper_case(bot)
-    bot.llm.script(call("search_expenses", text="kesar daag dava"))
+    bot.llm.script(call("search_expenses", text="kesar daag dava"), _graded(1))
     r = bot.send(SAGAR, "Kesar na daag ni dava ma kharcho ketlo thayo?")
     assert "No entries found" not in r
     assert 'No expense with "kesar daag dava"' in r
@@ -193,7 +198,7 @@ def test_live_q7_says_what_was_searched_and_offers_the_copper_hop(bot):
 
 def test_hop_with_no_matching_expense_says_so(bot):
     seed({"plant": "Mango", "product": "mancozeb", "problem": "kala daag"})
-    bot.llm.script(call("search_expenses", text="daag dava"))
+    bot.llm.script(call("search_expenses", text="daag dava"), _graded(1))
     bot.send(SAGAR, "daag ni dava no kharcho?")
     r = bot.tap(SAGAR, "xs:1")
     assert 'No expense with "mancozeb"' in r and "Path" in r
@@ -381,7 +386,7 @@ def test_adversarial_plant_name_is_never_added_without_the_admin_tap(bot):
 
 def test_hop_button_tapped_twice_gives_the_same_read_only_answer(bot):
     _copper_case(bot)
-    bot.llm.script(call("search_expenses", text="kesar daag dava"))
+    bot.llm.script(call("search_expenses", text="kesar daag dava"), _graded(1))
     bot.send(SAGAR, "Kesar na daag ni dava ma kharcho ketlo thayo?")
     a, b = bot.tap(SAGAR, "xs:1"), bot.tap(SAGAR, "xs:1")
     assert a == b and "₹850" in a

@@ -40,6 +40,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command, interrupt
 from sqlalchemy import select
 
+from app.ai import farm_tools, guards, proposals
 from app.core.formatting import fmt_date, inr
 from app.core.replies import Buttons
 from app.core.text import words
@@ -135,6 +136,7 @@ class State(TypedDict, total=False):
     stop: str                     # why the graph ended early (no_notes, no_worked, no_dose, ...)
     decision: str                 # saved | cancelled
     saved_id: int
+    index_late: bool              # the plan is saved but its search copy failed (added later)
     path: list[str]               # nodes that ran, for the How line
 
 
@@ -185,10 +187,33 @@ def ground(known, args: dict, message: str) -> dict:
             "expense_words": kind[:40], "activity": activity}
 
 
+def has_subject(session, known, out: dict) -> bool:
+    """The question names WHAT it is about: a problem ("mor kala") or a product ("copper"), or,
+    for a same-day question, the kind of work ("paani aapyu"). Plant, numbers, "plan", "kharch"
+    and other filler do not count."""
+    terms = farm_tools.topic_words(known, out["topic"], rag_index.stopwords(session))
+    if terms:
+        return True
+    # "Chhelle kyare paani aapyu?": the work itself ("paani") is the subject of a same-day
+    # question, whether the model filled `activity` or only `topic`.
+    return out["need"] == "same_day" and (bool(out["activity"]) or any(
+        w in farm_tools._ACTIVITY_WORDS for w in words(out["topic"])))
+
+
 def understand(state: State, runtime: Runtime[Deps]) -> dict:
-    known = farm.plants(runtime.context.ctx.session)
-    return {**ground(known, state.get("args", {}), state["question"]),
-            "path": _ran(state, "understand")}
+    s = runtime.context.ctx.session
+    known = farm.plants(s)
+    out = ground(known, state.get("args", {}), state["question"])
+    question = state["question"]
+    if not has_subject(s, known, out):
+        # Live 13-11-2026: "Kesar na 100 zhad mate plan banao" -> 'No note about "kesar"', and
+        # "E divase biju kai kharch thayo?" -> 'No note about "kharch"': the notes were there,
+        # the question just did not say which problem / which work. Ask, like the tree count.
+        # On resume this node runs again from the top: everything above only reads.
+        said = " ".join(str(interrupt({"ask": "topic", "need": out["need"]})).split())[:80]
+        out["topic"], out["topic_en"] = said, ""
+        question = f"{question} — {said}"
+    return {**out, "question": question, "path": _ran(state, "understand")}
 
 
 # ── A: journal — candidates by exact words + meaning, then an AI relevance check ────────────
@@ -222,7 +247,6 @@ def _note(e) -> Note:
 def candidates(ctx: "Context", state: State) -> list:
     """Journal rows that may be about the topic: every word of it written in the note, or found
     by meaning (the English copy connects 'mor kala' to 'flowers black'). Newest first."""
-    from app.ai import farm_tools   # here: farm_tools is imported by the agent, which imports us
     s = ctx.session
     plant, variety = state.get("plant") or None, state.get("variety") or None
     rows = [e for e in farm.query(s, plant=plant, variety=variety) if e.activity != "planned"]
@@ -387,8 +411,8 @@ def approve(state: State, runtime: Runtime[Deps]) -> Command[Literal["calc", "an
                                               "path": _ran(state, "approve")})
     ctx = runtime.context.ctx
     e = farm.add_entry(ctx.session, plan_entry(state, ctx.today), ctx.sender)
-    rag_index.index_rows(ctx.session, ctx.llm, "journal", {e.id})
-    return Command(goto="answer", update={"decision": "saved", "saved_id": e.id,
+    late = bool(farm_tools.index_note(ctx, "journal", e.id))
+    return Command(goto="answer", update={"decision": "saved", "saved_id": e.id, "index_late": late,
                                           "path": _ran(state, "approve")})
 
 
@@ -526,7 +550,7 @@ def resume(ctx: "Context", value: dict) -> dict:
 
 
 def waiting(ctx: "Context") -> str:
-    """What the asker's task waits for: approve | trees | edit | '' (nothing)."""
+    """What the asker's task waits for: topic | trees | approve | edit | '' (nothing)."""
     w = pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.SALAH)
     return w.payload.get("waiting", "") if w else ""
 
@@ -551,13 +575,113 @@ def _respond(ctx: "Context", tid: str, state: State, wait: dict | None) -> dict:
     s, chat, who = ctx.session, ctx.chat_id, ctx.sender.id
     if wait is None:
         pending.drop(s, chat, who, pending.SALAH)
-        return {"text_reply": final_text(state), "salah": state}
+        return {"text_reply": final_text(state), "buttons": _note_offer(ctx, state) or None,
+                "salah": state}
     kind = wait["ask"]
-    pending.put(s, chat, who, pending.SALAH, {"thread": tid, "waiting": kind}, ttl=WAIT)
+    pending.put(s, chat, who, pending.SALAH, {"thread": tid, "waiting": kind,
+                                              "need": wait.get("need", state.get("need", ""))},
+                ttl=WAIT)
+    if kind == "topic":
+        return {"text_reply": topic_question(wait.get("need", "")),
+                "buttons": topic_buttons(ctx, state, wait.get("need", "")) or None, "salah": state}
     if kind == "trees":
         return {"text_reply": head(state) + "\n\n🌳 How many trees? Send just the number, e.g. 60.",
-                "salah": state}
-    return {"text_reply": plan_text(state), "buttons": PLAN_BUTTONS, "salah": state}
+                "buttons": _note_offer(ctx, state) or None, "salah": state}
+    return {"text_reply": plan_text(state), "buttons": PLAN_BUTTONS + _note_offer(ctx, state),
+            "salah": state}
+
+
+# ── "Which problem?" — asked when the question names none ──────────────────────────────────
+
+TOPIC_BUTTON = re.compile(r"^fs:t:(\d{1,9})$")
+_MAX_TOPIC_BUTTONS = 4
+
+
+def topic_question(need: str) -> str:
+    if need == "same_day":
+        return ("📅 Which farm work do you mean? Send it in a few words, e.g. \"copper spray\" or "
+                "\"paani\" — or tap one below. (I don't remember earlier messages yet.)")
+    return ("🌱 For which problem? Send it in a few words, e.g. \"mor kala\" — or tap one "
+            "below.")
+
+
+def _topic_of(e, need: str) -> str:
+    """What a note is about, as the answer to "which problem / which work?"."""
+    if need == "same_day":
+        return (e.product or farm.ACTIVITY_LABEL.get(e.activity, e.activity) or "").strip()
+    return e.problem.strip() if e.product.strip() else ""
+
+
+def topic_buttons(ctx: "Context", state: State, need: str) -> Buttons:
+    """The problems (or, for a same-day question, the kinds of work) already in the journal for
+    this plant, newest first. A tap sends the note's own words back — never the button's text."""
+    g = ground(farm.plants(ctx.session), state.get("args", {}), state.get("question", ""))
+    seen, out = set(), []
+    for e in farm.query(ctx.session, plant=g["plant"] or None, variety=g["variety"] or None):
+        label = _topic_of(e, need) if e.activity != "planned" else ""
+        if label and label.lower() not in seen:
+            seen.add(label.lower())
+            out.append([(label[:30], f"fs:t:{e.id}")])
+        if len(out) == _MAX_TOPIC_BUTTONS:
+            break
+    return out
+
+
+def topic_from_button(ctx: "Context", jid: int) -> str:
+    """The tapped note's problem / work, read from the database ("" if it is gone)."""
+    w = pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.SALAH)
+    e = farm.get_entry(ctx.session, jid)
+    return _topic_of(e, (w.payload.get("need", "") if w else "")) if e else ""
+
+
+def topic_from_reply(ctx: "Context", text: str) -> str | None:
+    """A typed answer to "which problem?": a few words, no number, not yes/no, and words the
+    journal actually contains. Anything else ("balance", "100 tea") is a new message and the
+    question keeps waiting."""
+    t = " ".join(str(text or "").split())
+    if (not t or len(t.split()) > 6 or re.search(r"\d", t) or guards.YES.match(t)
+            or guards.NO.match(t)):
+        return None
+    s = ctx.session
+    terms = farm_tools.topic_words(farm.plants(s), t, rag_index.stopwords(s))
+    if not terms:
+        return None
+    rows = farm.query(s)
+    return t if any(farm.mentions(e, w) for e in rows for w in terms) else None
+
+
+# ── 📝 Save as a farm note ──────────────────────────────────────────────────────────────────
+# Owner, 13-11-2026: "Kesar par mor kala che" getting a plan is right, but it may be a new problem
+# on a new plant, so saving it as a note must be one tap away.
+
+NOTE_BUTTON = ("📝 Save as a farm note", "fs:note")
+
+
+def _note_offer(ctx: "Context", state: State) -> Buttons:
+    if state.get("need") != "plan" or state.get("decision") or not state.get("topic"):
+        return []
+    pending.put(ctx.session, ctx.chat_id, ctx.sender.id, pending.SALAH_NOTE,
+                {"question": state.get("question", ""), "topic": state["topic"]}, ttl=WAIT)
+    return [[NOTE_BUTTON]]
+
+
+def save_as_note(ctx: "Context") -> dict:
+    """The tapped 📝: the same "Save this farm note?" preview as a typed observation (✅ saves).
+    Built by the same code, so the same checks apply (plant from the words, problem grounded)."""
+    w = pending.get(ctx.session, ctx.chat_id, ctx.sender.id, pending.SALAH_NOTE)
+    if w is None:
+        return {"text_reply": "⌛ Nothing waiting to be saved (it waits 24 hours). Send the "
+                              "observation as a message, e.g. \"Kesar par mor kala che\"."}
+    r = farm_tools._log(ctx, farm.plants(ctx.session),
+                        {"activity": "observation", "problem": w.payload.get("topic", "")},
+                        w.payload.get("question", ""))
+    p = r.get("proposal")
+    if not p:
+        return {"text_reply": "❌ No plant named, so no note was made. Send it as a message with "
+                              "the plant, e.g. \"Kesar par mor kala che\"."}
+    pending.drop(ctx.session, ctx.chat_id, ctx.sender.id, pending.SALAH_NOTE)
+    proposals.store(ctx.session, ctx.chat_id, ctx.sender, p)
+    return {"text_reply": proposals.preview(p), "buttons": proposals.buttons(p)}
 
 
 # ── Reply templates ─────────────────────────────────────────────────────────────────────────
@@ -599,11 +723,38 @@ def how(state: State) -> str:
     return "🔎 How: LangGraph — " + " → ".join(steps) if steps else ""
 
 
+_USER_ML = re.compile(r"(\d+(?:[.,]\d+)?)\s*ml\b", re.IGNORECASE)
+
+
+def user_dose(state: State) -> str:
+    """A dose the user wrote ("2 ml thi"), as written, or "". Read by code from the message."""
+    m = _USER_ML.search(state.get("question", ""))
+    return m.group(1).replace(",", ".") if m else ""
+
+
+def user_dose_line(state: State) -> str:
+    """Live 13-11-2026: "2 ml thi plan banao" got a 1 ml plan and no word about the 2 ml. The
+    plan still uses only a dose written in the farmer's advice (a dose nobody wrote down can burn
+    a tree) — but it says so."""
+    mine = user_dose(state)
+    if not mine:
+        return ""
+    if state.get("dose_from"):
+        if Decimal(mine) == Decimal(str(state["dose_ml"])):
+            return ""
+        return (f"ℹ️ You wrote {_n(mine)} ml; the farmer's advice {state['dose_from']} says "
+                f"{_n(state['dose_ml'])} ml per litre, so the plan uses {_n(state['dose_ml'])} ml. "
+                "To plan with your dose, save it as farmer advice first (menu → 📚).")
+    return (f"ℹ️ You wrote {_n(mine)} ml. Save it as farmer advice (menu → 📚) and ask again: "
+            "a plan uses only a dose that is written down.")
+
+
 def plan_text(state: State) -> str:
     lines = [f"🌱 Spray plan — {where(state)} · {state['topic']} · {state['trees']} trees", "",
              head(state),
              f"💧 Dose: {_n(state['dose_ml'])} ml per litre, {_n(state['litres_per_tree'])} L per "
              f"tree (farmer advice {state['dose_from']})",
+             *([user_dose_line(state)] if user_dose_line(state) else []),
              f"🧮 {state['trees']} trees × {_n(state['litres_per_tree'])} L = {_n(state['water_l'])} L "
              f"water → {_n(state['total_ml'])} ml {state['dava']}",
              "", how(state) + " → waiting for you",
@@ -627,11 +778,14 @@ def final_text(state: State) -> str:
         body = (head(state) + f"\n\n💧 The dose of {state['dava']} is not written in the farmer's "
                 "advice, so no plan was calculated. Save the dose as farmer advice (menu → 📚), "
                 "or ask an agriculture expert.")
+        if user_dose(state):
+            body += "\n" + user_dose_line(state)
     elif need == "plan":
         if state.get("decision") == "saved":
             body = (f"✅ Plan saved as J-{state['saved_id']} (planned, not done yet)\n"
                     f"{state['dava']} · {_n(state['total_ml'])} ml · {state['trees']} trees · {place}\n"
-                    "🔔 In 2 days I'll ask whether the spray was done.")
+                    "🔔 In 2 days I'll ask whether the spray was done."
+                    + (farm_tools.INDEX_LATE if state.get("index_late") else ""))
         else:
             body = "❌ Plan cancelled — nothing was saved."
     elif need == "purchase":
@@ -666,7 +820,7 @@ def final_text(state: State) -> str:
                          "without the word to see all)")
         body = "\n".join(lines)
     h = how(state)
-    return f"{body}\n{h}" if h else body
+    return f"{body}\n\n{h}" if h else body
 
 
 # ── 2 days later: "was the spray done?" (a tapped button: one meaning, no model) ───────────
@@ -690,9 +844,9 @@ def plan_answer(ctx: "Context", jid: int, done: bool) -> str:
         farm.mark_followup(ctx.session, jid, "skipped")
         return f"👍 OK — J-{jid} stays a plan (not done). Nothing else was changed."
     farm.plan_done(ctx.session, jid, ctx.today)
-    rag_index.index_rows(ctx.session, ctx.llm, "journal", {jid})
+    late = farm_tools.index_note(ctx, "journal", jid)
     return (f"✅ J-{jid} is now a spray done on {fmt_date(ctx.today)}.\n"
-            "🔔 In 7 days I'll ask how it went.")
+            f"🔔 In 7 days I'll ask how it went.{late}")
 
 
 # ── Mermaid picture of the graph, for the README / interview ────────────────────────────────

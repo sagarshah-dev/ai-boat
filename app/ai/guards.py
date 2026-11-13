@@ -71,6 +71,20 @@ def has_item_word(text: str, people_words: set[str]) -> bool:
     return False
 
 
+# Live 13-11-2026: "sorry 150" (meaning "sorry, it was 150") was saved as an expense named
+# "sorry". A description made only of these words names no item. A closed set, like YES / NO:
+# apology / correction words, never things bought.
+_NOT_ITEMS = {"sorry", "sry", "soory", "oops", "galti", "bhool", "bhul", "mistake", "wrong",
+              "correction", "actually", "hmm", "ok", "okay", "haa", "ha", "na", "nahi", "no",
+              "yes", "thanks", "thank", "you", "ji", "are", "arre", "bhai"}
+
+
+def not_an_item(description: str) -> bool:
+    """True when the model's description is only apology / filler words ("sorry", "ok")."""
+    ws = [w.lower() for w in re.findall(r"[^\W\d_]+", str(description or ""))]
+    return bool(ws) and all(w in _NOT_ITEMS for w in ws)
+
+
 def amount_only_pattern(people_words: set[str]) -> re.Pattern:
     """A reply that is just an amount: 100, ₹100, rs 100, 1,200, 2k, 1.5 lakh — optionally with
     'paid by <name>'. Used to complete a waiting "how much was it?"."""

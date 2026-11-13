@@ -68,7 +68,8 @@ def _migration(filename: str):
 
 PLANT_SEED = _migration("0002_farm_seed.py").PLANTS
 _M0004 = _migration("0004_stopwords_and_mango_varieties.py")
-VARIETY_SEED, STOPWORD_SEED = _M0004.VARIETIES, _M0004.STOPWORDS
+VARIETY_SEED = _M0004.VARIETIES
+STOPWORD_SEED = _M0004.STOPWORDS + _migration("0006_more_stopwords.py").WORDS
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +89,8 @@ def clean_tables(migrated_db):
                               "VALUES (:p, :v, :a, 0, NULL)"),
                          {"p": plant, "v": variety, "a": aliases})
         for w in STOPWORD_SEED:
-            conn.execute(text("INSERT INTO search_stopwords (word) VALUES (:w)"), {"w": w})
+            conn.execute(text("INSERT INTO search_stopwords (word) VALUES (:w) "
+                              "ON CONFLICT DO NOTHING"), {"w": w})
     from app.services.rag_index import reset_stopwords_cache
     reset_stopwords_cache()
     yield

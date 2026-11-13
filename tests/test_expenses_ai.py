@@ -89,13 +89,23 @@ def test_two_different_expenses_in_one_message(bot):
     ("5 kg khatar", 5),                # quantity, not money
     ("20 litre diesel", 20),
     ("tea on 10-10-2026", 10),         # a date, not money
-    ("2 lakh tractor", 2),             # old bot accepted ₹2 here
 ])
 def test_amount_not_written_is_never_saved_and_is_asked(bot, text, model_amount):
     bot.llm.script(add(model_amount, "x item"))
     reply = bot.send(SAGAR, text)
     assert expenses_in_db() == []
     assert f'"{text}" — how much was it?' in reply
+
+
+def test_model_amount_not_written_but_the_user_wrote_one_is_offered_for_a_tap(bot):
+    # Old bot accepted ₹2 for "2 lakh tractor". Still never saved as ₹2, and no longer asked:
+    # the ONE amount the user wrote is shown for ✅.
+    bot.llm.script(add(2, "tractor"))
+    reply = bot.send(SAGAR, "2 lakh tractor")
+    assert expenses_in_db() == []
+    assert "❓ Is this right?" in reply and "₹2,00,000 — tractor — Sagar" in reply
+    assert "Logged" in bot.send(SAGAR, "yes")
+    assert [(e.amount, e.description) for e in expenses_in_db()] == [(200000, "tractor")]
 
 
 @pytest.mark.parametrize("text,amount,shown", [
@@ -258,7 +268,8 @@ def test_ai_balance_is_the_same_text_as_the_command(bot):
     add_rows(("Sagar", 300, "seed"))
     bot.llm.script(call("get_balances"))
     ai_reply = bot.send(SAGAR, "hisab aapo")
-    assert ai_reply == bot.send(SAGAR, "balance")
+    from app.ai.agent import HOW_BALANCE
+    assert ai_reply == bot.send(SAGAR, "balance") + "\n\n" + HOW_BALANCE
 
 
 def test_search_reply_is_a_template_with_code_total(bot):

@@ -243,6 +243,9 @@ def _answer_salah(env: Env, raw: str) -> list[Out] | None:
     wait = w.payload.get("waiting", "") if w else ""
     if not wait:
         return None
+    if wait == "topic":
+        topic = farm_salah.topic_from_reply(env.ctx(), raw)
+        return None if topic is None else _salah(env, topic)
     if wait in ("trees", "edit"):
         n = farm_salah.trees_from_reply(raw)
         if n is None:
@@ -269,19 +272,34 @@ def _salah(env: Env, value) -> list[Out]:
     return [Reply(r["text_reply"], r.get("buttons"))]
 
 
-_SALAH_BUTTON = re.compile(r"^fs:(save|edit|no)$")
+_SALAH_BUTTON = re.compile(r"^fs:(save|edit|no|note)$")
 
 
 def _salah_button(env: Env, action: str) -> list[Out]:
     """✅ / ✏️ / ❌ under a plan. Found by chat AND member, so only the asker's plan moves."""
+    if action == "note":
+        r = farm_salah.save_as_note(env.ctx())
+        return [Reply(r["text_reply"], r.get("buttons"))]
     wait = farm_salah.waiting(env.ctx())
     if wait == "trees":
         return [Reply("🌳 First send the number of trees, e.g. 60.")]
+    if wait == "topic":
+        return [Reply("🌱 First send the problem, e.g. \"mor kala\" — or tap one of its buttons.")]
     if wait not in ("approve", "edit"):
         return [Reply(farm_salah.EXPIRED)]
     if action == "edit":
         return [Reply(farm_salah.ask_edit(env.ctx())["text_reply"])]
     return _salah(env, {"action": "save" if action == "save" else "cancel"})
+
+
+def _salah_topic_button(env: Env, jid: int) -> list[Out]:
+    """A tapped problem under "For which problem?". Only while the asker's plan waits for it."""
+    if farm_salah.waiting(env.ctx()) != "topic":
+        return [Reply(farm_salah.EXPIRED)]
+    topic = farm_salah.topic_from_button(env.ctx(), jid)
+    if not topic:
+        return [Reply("This button is no longer valid. Send the problem in a few words.")]
+    return _salah(env, topic)
 
 
 def _apply(env: Env, p: dict, pick: int | None) -> list[Out]:
@@ -421,6 +439,9 @@ def handle_button(env: Env, data: str) -> list[Out]:
     m = _SALAH_BUTTON.match(data)
     if m:
         return _salah_button(env, m.group(1))
+    m = farm_salah.TOPIC_BUTTON.match(data)
+    if m:
+        return _salah_topic_button(env, int(m.group(1)))
     m = farm_salah.PLAN_BUTTON.match(data)
     if m:
         return [Reply(farm_salah.plan_answer(env.ctx(), int(m.group(1)), m.group(2) == "y"))]

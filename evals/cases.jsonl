@@ -61,3 +61,5 @@
 {"id": "list-joined-item-not-saved", "turns": [{"from": "Sagar", "text": "150 tea, 250 vadapav, 500 sevsad, coffee all by sagar"}], "expect": {"saved": [{"amount": 150, "paid_by": "Sagar"}, {"amount": 250, "paid_by": "Sagar"}], "may_save": [{"amount": 500, "paid_by": "Sagar"}]}}
 {"id": "and-two-payers-no-comma", "turns": [{"from": "Sagar", "text": "300 nasta by lalo ane 700 khatar by bako"}], "expect": {"saved": [{"amount": 300, "paid_by": "Lalo"}, {"amount": 700, "paid_by": "Biren"}]}}
 {"id": "pending-by-alias", "turns": [{"from": "Sagar", "text": "diesel"}, {"from": "Sagar", "text": "500 by jignesh"}], "expect": {"saved": [{"amount": 500, "paid_by": "Lalo", "desc_any": ["diesel"]}]}}
+{"id": "live-13-11-gujarati-e-lidhi", "turns": [{"from": "Sagar", "text": "Biren e 100 tea lidhi"}, {"from": "Sagar", "text": "yes"}], "expect": {"saved": [{"amount": 100, "paid_by": "Biren"}]}}
+{"id": "live-13-11-sorry-is-not-an-item", "turns": [{"from": "Sagar", "text": "100 tea by biren"}, {"from": "Sagar", "text": "sorry 150"}], "expect": {"saved": [{"amount": 100, "paid_by": "Biren"}]}}

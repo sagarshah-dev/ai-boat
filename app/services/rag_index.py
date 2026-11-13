@@ -182,6 +182,24 @@ def sync(session: Session, llm: LLM) -> dict:
     return {"embedded": len(changed), "deleted": len(removed), "total": len(docs)}
 
 
+CATCH_UP_MAX = 10       # rows per search: a long backlog is the daily sync's job
+
+
+def catch_up(session: Session, llm: LLM) -> int:
+    """Index rows whose indexing failed when they were saved (quota, timeout), right before a
+    search. Without this a saved note stayed invisible to meaning search until the daily sync —
+    and the sync needs Cloud Scheduler (owner, 04-11-2026: "Saved" must mean findable)."""
+    done = 0
+    for kind, table in (("journal", JournalEntry), ("knowledge", Knowledge)):
+        ids = set(session.scalars(select(table.id).where(table.indexed_at.is_(None))
+                                  .order_by(table.id).limit(CATCH_UP_MAX)))
+        if ids and index_rows(session, llm, kind, ids):
+            done += len(ids)
+    if done:
+        log.info("search index caught up", extra={"fields": {"rows": done}})
+    return done
+
+
 def index_rows(session: Session, llm: LLM, kind: str, row_ids: set[int]) -> bool:
     """Index rows right after they are saved. Never raises and never undoes the save: it runs
     in its own savepoint, and on failure the row stays un-indexed for the daily sync."""

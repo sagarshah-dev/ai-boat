@@ -407,12 +407,12 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
         return _add_expense(ctx, args, message)
     if name == tools.GET_BALANCES:
         b = balance.compute(ctx.session)
-        return {"text_reply": b.text, "total": b.total, "plan": [
+        return {"text_reply": b.text + "\n\n" + HOW_BALANCE, "total": b.total, "plan": [
             f"{t.from_name} pays {t.to_name} ₹{inr(t.amount)}" for t in b.plan]}
     if name == tools.GET_RECENT:
         n = _int(args.get("n"), 5, 1, MAX_ROWS)
         rows = expenses.recent(ctx.session, n)
-        return {"text_reply": recent_text(rows), "count": len(rows)}
+        return {"text_reply": recent_text(rows) + "\n\n" + HOW_RECENT, "count": len(rows)}
     if name == tools.SEARCH_EXPENSES:
         return _search(ctx, args, message)
     if name == tools.DELETE_LAST_EXPENSE:
@@ -430,23 +430,51 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
     return {"error": f"Unknown tool: {name}"}
 
 
+def _written_amount(ctx: Context, args: dict, message: str) -> dict | None:
+    """The model gave no amount (or one the user never wrote), but the message has exactly ONE
+    amount written in digits and names an item. Live 13-11-2026: "Biren e 100 tea lidhi" was
+    answered with "how much was it?". The number is the user's own, so it is offered for ONE
+    tap of confirmation instead of a question — never saved without it (money is not guessed:
+    "2 tea" may be two cups)."""
+    nums = [n for n in guards.numbers_in(message) if n > 0]
+    description = str(args.get("description") or "").strip()
+    # One phrase only: in a list ("150 tea, coffee by lalo") the one number belongs to another
+    # item, and the item without an amount is asked about as before.
+    if (len(nums) != 1 or len(guards.segments(message)) != 1 or guards.ARITHMETIC.search(message)
+            or not guards.has_item_word(message, ctx.people_words)
+            or not re.search(r"[^\W\d_]", description) or guards.not_an_item(description)):
+        return None
+    amount = nums[0]
+    raw_date = str(args.get("date") or "").strip()
+    on = parse_date(raw_date) if raw_date else ctx.today
+    payer, _why = resolve_payer(ctx, args, message, amount)
+    if on is None or payer is None:
+        return None
+    item = proposals.expense_item(amount=amount, description=description, paid_by=payer,
+                                  category=str(args.get("category") or ""),
+                                  merchant=str(args.get("merchant") or ""), on=on)
+    return {"proposal": proposals.expenses_proposal([item], "check"), "amount": amount}
+
+
 def _add_expense(ctx: Context, args: dict, message: str) -> dict:
     try:
         amount = to_rupees(args.get("amount") or 0)
     except (InvalidOperation, ValueError):
         amount = Decimal("0")
     if amount <= 0:
-        return {"error": "No amount. Nothing was saved; the system asks the user.",
-                "needs_amount": True}
+        return _written_amount(ctx, args, message) or {
+            "error": "No amount. Nothing was saved; the system asks the user.", "needs_amount": True}
     if guards.ARITHMETIC.search(message):
         return {"error": "The message has a calculation (like 2 x 50), not a total. Nothing was "
                          "saved. Ask the user to send the total with the item, e.g. 100 tea."}
     if not guards.amount_in_text(amount, message):
         # The "tea by sagar" -> ₹10 bug: a valid-looking number that the user never wrote.
-        return {"error": f"{amount} is not written in the user's message. Nothing was saved; "
-                         "the system asks the user.", "needs_amount": True}
+        return _written_amount(ctx, args, message) or {
+            "error": f"{amount} is not written in the user's message. Nothing was saved; the "
+                     "system asks the user.", "needs_amount": True}
     description = str(args.get("description") or "").strip()
-    if not guards.has_item_word(message, ctx.people_words) or not re.search(r"[^\W\d_]", description):
+    if (not guards.has_item_word(message, ctx.people_words)
+            or not re.search(r"[^\W\d_]", description) or guards.not_an_item(description)):
         return {"error": "No item named. Nothing was saved; the system asks the user.",
                 "needs_description": True, "amount": amount}
 
@@ -662,11 +690,18 @@ def _search(ctx: Context, args: dict, message: str = "") -> dict:
         if hop:
             return {"text_reply": f"{reply}\n\n{hop[0]}", "buttons": hop[1], "count": 0,
                     "total": total}
-        return {"text_reply": reply, "count": 0, "total": total}
-    return {"text_reply": search_text(rows, total), "count": len(rows), "total": total}
+        return {"text_reply": f"{reply}\n\n{HOW_SEARCH}", "count": 0, "total": total}
+    return {"text_reply": search_text(rows, total) + "\n\n" + HOW_SEARCH, "count": len(rows),
+            "total": total}
 
 
 # ── Replies (fixed templates: same text every time for the same data) ───────────────────────
+
+# Farm answers say how they were found; money answers did not (owner, 06-11-2026). Same idea:
+# the user can tell a database answer from a model's.
+HOW_SEARCH = "💰 How: SQL — the expenses table searched by code; totals added by code, no AI"
+HOW_RECENT = "💰 How: SQL — the newest rows of the expenses table, no AI"
+HOW_BALANCE = "🧮 How: worked out by code from the expenses table, no AI in the numbers"
 
 def added_text(v: ExpenseView) -> str:
     return (f"✅ Logged #{v.id}: ₹{inr(v.amount)} for {v.description}, paid by {v.paid_by} "

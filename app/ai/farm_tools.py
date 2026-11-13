@@ -21,7 +21,7 @@ from app.ai import proposals
 from app.core.formatting import fmt_date, parse_date
 from app.core.replies import Buttons, Out, Photo, Reply, yes_no
 from app.core.text import strip_marks, words
-from app.integrations.gemini import ToolSpec
+from app.integrations.gemini import LlmError, ToolSpec
 from app.services import farm, pending, rag, rag_index
 from app.services.farm import ACTIVITY_LABEL, ALL, OUTCOME_LABEL
 from app.services.meetings import WEEKDAY_SHORT, datetime_signal
@@ -523,6 +523,11 @@ def activities_text(ctx: "Context", *, plant=None, variety=None, several=(), act
     source, unavailable = SRC_EXACT, ""
     if topic:
         exact = [e for e in rows if any(farm.mentions(e, t) for t in topic)]
+        if last_only:
+            # ONE note is shown, so it must be about the whole topic: for "mor kala", J-3 "pan
+            # par kala daag" (leaves) must not stand in for black flowers (live 06-11: "last"
+            # showed the newest note that shared a word). A list keeps every match.
+            exact = [e for e in exact if all(farm.mentions(e, t) for t in topic)] or exact
         english = [e for e in rows if topic_en and farm.mentions_in_english(e, topic_en)]
         if exact:
             rows = exact
@@ -557,14 +562,14 @@ def activities_text(ctx: "Context", *, plant=None, variety=None, several=(), act
         older = len(rows) - 1
         more = (f"\n…{older} older note{'s' if older != 1 else ''} too — ask without \"last\" to "
                 "see all." if older else "")
-        return f"📒 Last {what}{period}{when}:\n• {farm.journal_line(e)}{more}\n{source}"
+        return f"📒 Last {what}{period}{when}:\n• {farm.journal_line(e)}{more}\n\n{source}"
     # Newest first, at most 5: enough to see the pattern (what was tried, what worked) on a phone.
     shown = rows[:5]
     text = (f"📒 {what[:1].upper() + what[1:]} notes{period} — {len(rows)} found:\n"
             + "\n".join("• " + farm.journal_line(e) for e in shown))
     if len(rows) > len(shown):
         text += f"\n…and {len(rows) - len(shown)} older."
-    return text + "\n" + source
+    return text + "\n\n" + source
 
 
 def counts_text(ctx: "Context", known, message: str = "") -> str:
@@ -584,7 +589,7 @@ def counts_text(ctx: "Context", known, message: str = "") -> str:
         if r.unknown_qty:
             lines.append(f"   ⚠️ {r.unknown_qty} note(s) without a number of plants are not counted")
     head = "🌳 Plants alive" + ("" if only else f" — {sum(r.alive for r in rows)} total")
-    return head + ":\n" + "\n".join(lines) + "\n" + SRC_COUNT
+    return head + ":\n" + "\n".join(lines) + "\n\n" + SRC_COUNT
 
 
 def _min_score(ctx: "Context") -> float:
@@ -617,12 +622,12 @@ def _search(ctx: "Context", known, args: dict, message: str) -> dict:
     missing = ""
     if found.mode == "basic":
         if found.hits:
-            return {"text_reply": rag.basic_reply(found) + "\n" + rag.how_line(found, f)}
+            return {"text_reply": rag.basic_reply(found) + "\n\n" + rag.how_line(found, f)}
     else:
         ans = rag.answer(ctx.llm, question, found)
         if ans.status != "not_found":
             outs = [Photo(fid, cap) for fid, cap in ans.photos]
-            return {"text_reply": ans.reply + "\n" + rag.how_line(found, f, ans.status),
+            return {"text_reply": ans.reply + "\n\n" + rag.how_line(found, f, ans.status),
                     "outs": outs, "cited": ans.cited}
         missing = ans.missing
 
@@ -683,11 +688,23 @@ def _note_preview(p: dict) -> str:
     return text + "\n\n" + proposals.FOOTER
 
 
+# Live 04-11-2026: indexing failed, the reply still said only "Saved", and meaning search could
+# not find the note. The note IS saved (indexing never undoes a save); the reply now says the
+# search copy is late, and the next search adds it (rag_index.catch_up).
+INDEX_LATE = ("\nℹ️ Saved, but the search copy failed just now (AI service busy). It is added "
+              "automatically on the next search.")
+
+
+def index_note(ctx: "Context", kind: str, row_id: int) -> str:
+    """Index one saved row; the line to add to the reply if it did not work."""
+    return "" if rag_index.index_rows(ctx.session, ctx.llm, kind, {row_id}) else INDEX_LATE
+
+
 def _note_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
     e = farm.add_entry(ctx.session, p, ctx.sender)
-    rag_index.index_rows(ctx.session, ctx.llm, "journal", {e.id})
+    late = index_note(ctx, "journal", e.id)
     extra = "\n🔔 I'll ask how it went in 7 days." if p["activity"] in farm.TREATMENTS else ""
-    return [Reply(f"✅ Saved farm note J-{e.id}\n{note_summary(p)}{extra}")]
+    return [Reply(f"✅ Saved farm note J-{e.id}\n{note_summary(p)}{extra}{late}")]
 
 
 def _note_other_text(ctx: "Context", p: dict, text: str) -> list[Out] | None:
@@ -729,8 +746,8 @@ def _result_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
     if e.result:
         return [Reply(f"J-{e.id} already has a result:\n↳ {e.result}\nNothing was changed.")]
     farm.set_result(ctx.session, e.id, _result_line(p), ctx.today)
-    rag_index.index_rows(ctx.session, ctx.llm, "journal", {e.id})
-    return [Reply(f"✅ Result saved on J-{e.id}\n{target['line']}\n↳ {_result_line(p)}")]
+    late = index_note(ctx, "journal", e.id)
+    return [Reply(f"✅ Result saved on J-{e.id}\n{target['line']}\n↳ {_result_line(p)}{late}")]
 
 
 def _advice_preview(p: dict) -> str:
@@ -753,9 +770,8 @@ def _advice_buttons(p: dict) -> Buttons:
 def _advice_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
     k = farm.add_knowledge(ctx.session, p["title"], p["text"], ctx.sender, p.get("source", "text"),
                            ctx.today)
-    indexed = rag_index.index_rows(ctx.session, ctx.llm, "knowledge", {k.id})
+    late = index_note(ctx, "knowledge", k.id)
     parts = len(farm.chunk_text(p["text"]))
-    late = "" if indexed else "\n(The search index will pick it up in the daily sync.)"
     return [Reply(f"📚 Saved as farmer advice K-{k.id} ({parts} part{'s' if parts != 1 else ''})\n"
                   f"{p['title']}{late}")]
 
@@ -801,9 +817,9 @@ def followup_answer(ctx: "Context", jid: int, outcome: str) -> list[Out]:
         return [Reply(f"👍 OK — no result recorded for J-{jid}.")]
     text = f"{OUTCOME_LABEL[outcome]} (7-day check by {ctx.sender.name})"
     farm.set_result(ctx.session, jid, text, ctx.today)
-    rag_index.index_rows(ctx.session, ctx.llm, "journal", {jid})
+    late = index_note(ctx, "journal", jid)
     return [Reply(f"✅ Result saved on J-{jid}\n{farm.journal_line(e, with_result=False)}\n↳ {text}\n"
-                  "Add details any time, e.g. \"copper pachhi daag band\".")]
+                  f"Add details any time, e.g. \"copper pachhi daag band\".{late}")]
 
 
 def general_answer(ctx: "Context") -> list[Out]:
@@ -829,8 +845,15 @@ HOP = re.compile(r"^xs:(\d{1,9})$")
 
 
 def expense_hop(ctx: "Context", message: str) -> tuple[str, Buttons] | None:
-    """The journal note this money question is about, if its words point to exactly the notes
-    that name a product. Buttons search expenses for that product."""
+    """The journal note this money question is about, if its words point to notes that name a
+    product. Buttons search expenses for that product.
+
+    A shared word is not enough (live 06-11-2026: "mor kala ... dava" offered J-3 copper, a
+    note about black spots on LEAVES, because both say "kala"). The notes that share words go
+    through the same AI relevance check as Farm Salah, and only notes it keeps are offered; a
+    note whose treatment worked comes first. No check (model down) means no hop: the honest
+    "no expense with ..." line stands on its own."""
+    from app.ai import farm_salah     # here: farm_salah imports this module
     known = farm.plants(ctx.session)
     topic = [t for t in topic_words(known, message, rag_index.stopwords(ctx.session))
              if t not in _MONEY_WORDS]
@@ -840,16 +863,24 @@ def expense_hop(ctx: "Context", message: str) -> tuple[str, Buttons] | None:
     plant = farm.single_plant(match)
     scored = []
     for e in farm.query(ctx.session, plant=plant):
-        if not e.product.strip():
+        if not e.product.strip() or e.activity == "planned":
             continue
         score = sum(1 for t in topic if farm.mentions(e, t))
         if score:
             scored.append((score, e))
     if not scored:
         return None
-    best = max(sc for sc, _ in scored)
+    ranked = [e for _, e in sorted(scored, key=lambda x: (-x[0], -x[1].id))]
+    try:
+        kept = farm_salah.grade(ctx, message, ranked[:farm_salah.MAX_CANDIDATES])
+    except LlmError:
+        log.warning("hop relevance check failed; no hop offered")
+        return None
+    if not kept:
+        return None
+    kept.sort(key=lambda e: (farm_salah.outcome_of(e.result) != "worked", -e.id))
     seen, picks = set(), []
-    for _, e in sorted(((sc, e) for sc, e in scored if sc == best), key=lambda x: -x[1].id):
+    for e in kept:
         if e.product.lower() not in seen:
             seen.add(e.product.lower())
             picks.append(e)
@@ -857,7 +888,8 @@ def expense_hop(ctx: "Context", message: str) -> tuple[str, Buttons] | None:
     lines = "\n".join(f"📒 J-{e.id} ({fmt_date(e.entry_date)}): {e.problem or e.note[:40]} → "
                       f"{e.product}" for e in picks)
     buttons = [[(f"🔎 {e.product[:28]} in expenses", f"xs:{e.id}")] for e in picks]
-    return f"The journal links this to:\n{lines}\nTap to search expenses for it.", buttons
+    return (f"The journal links this to:\n{lines}\nTap to search expenses for it.\n\n"
+            "🔎 How: notes that share your words, then AI-checked for the same problem"), buttons
 
 
 def hop_answer(ctx: "Context", entry_id: int) -> list[Out]:
