@@ -35,3 +35,9 @@
 {"id": "salah-fertilizer-same-day", "text": "Je divase khatar nakhyu, e divase biju kai kharch thayo?", "tool": "farm_salah"}
 {"id": "observation-mango-spots", "text": "aamba na pan par daag dekhay che", "tool": "log_farm_activity"}
 {"id": "observation-question-is-search", "text": "limbu na pan pila padya che, shu karu?", "tool": "search_farm_notes"}
+{"id": "review-this-month-live", "text": "Aa mahina nu farm review aapo", "tool": "farm_review"}
+{"id": "review-last-month", "text": "gaya mahina no saar aapo, kharch ane kaam banne", "tool": "farm_review"}
+{"id": "review-english", "text": "monthly summary of the farm please", "tool": "farm_review"}
+{"id": "review-gujarati-script", "text": "આ મહિનાનો ફાર્મ રિવ્યૂ આપો", "tool": "farm_review"}
+{"id": "review-not-balance", "text": "hisab batav", "tool": "get_balances"}
+{"id": "review-not-a-list", "text": "aa mahina na badha kharch batav", "tool": "search_expenses"}
