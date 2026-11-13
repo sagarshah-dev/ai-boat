@@ -38,7 +38,9 @@ def expense_tools(payers: list[str]) -> list[ToolSpec]:
                         "Put EVERY expense of the message in `items`, one item per amount, in "
                         "the order written. Example: '150 tea, 250 vadapav by lalo, coffee' -> "
                         "items: [{150, tea}, {250, vadapav, Lalo}, {0, coffee}]. An item with no "
-                        "amount written gets amount 0 — the system asks for it.",
+                        "amount written gets amount 0 — the system asks for it. Gujarati '<name> e "
+                        "<amount> <item> lidhi/lidhu/aapya' means <name> paid: 'Biren e 100 tea "
+                        "lidhi' -> items: [{100, tea, Biren}].",
             parameters=_s("OBJECT", properties={
                 "items": _s("ARRAY", "Every expense in the message, one per amount.",
                             items=_s("OBJECT", properties={
