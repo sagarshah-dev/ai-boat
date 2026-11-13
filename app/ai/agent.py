@@ -21,7 +21,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import farm_salah, farm_tools, guards, meeting_tools, proposals, tools
+from app.ai import farm_review, farm_salah, farm_tools, guards, meeting_tools, proposals, tools
 from app.config import Settings
 from app.core.formatting import entries, fmt_date, inr, parse_date, to_rupees
 from app.core.replies import Buttons, Out
@@ -276,7 +276,7 @@ def system_prompt(ctx: Context) -> str:
         "If the date or the time is missing, leave it empty — the system asks. Always call "
         "find_meetings before cancel_meeting or reschedule_meeting; if more than one meeting could "
         "match, ask which one. "
-        + farm_tools.SYSTEM_RULES + farm_salah.RULES + MEMORY_RULES +
+        + farm_tools.SYSTEM_RULES + farm_salah.RULES + farm_review.RULES + MEMORY_RULES +
         "BALANCE: if you used get_balances with other tools, never rewrite its numbers. "
         "If a tool returns an error, explain it simply and ask the user what is needed."
     )
@@ -400,7 +400,7 @@ def _log_round(round_no: int, runs: list[ToolRun]) -> None:
 
 def all_tools(ctx: Context):
     return (tools.expense_tools([m.name for m in ctx.people]) + meeting_tools.specs()
-            + farm_tools.specs() + [farm_salah.SPEC])
+            + farm_tools.specs() + [farm_salah.SPEC, farm_review.SPEC])
 
 
 def _unresolved_errors(runs: list[ToolRun]) -> list[ToolRun]:
@@ -427,6 +427,8 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
         return farm_tools.execute(ctx, name, args, message)
     if name == farm_salah.NAME:
         return farm_salah.start(ctx, args, message)
+    if name == farm_review.NAME:
+        return farm_review.run(ctx, args)
     if name == tools.ADD_EXPENSE:
         return _add_expense(ctx, args, message)
     if name == tools.GET_BALANCES:

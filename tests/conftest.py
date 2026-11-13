@@ -191,6 +191,14 @@ class FakeChat:
         self.escalated += 1
 
     def _next(self):
+        own = self.llm.queue_for(self.system)
+        if own is not None:
+            if not own:
+                raise AssertionError("an agent asked the model more often than the test scripted")
+            item = own.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
         if not self.llm.turns:
             raise AssertionError("the bot asked the model more often than the test scripted")
         item = self.llm.turns.pop(0)
@@ -269,6 +277,18 @@ class FakeLLM:
         self.embedded: list[str] = []
         self.embed_error: Exception | None = None
         self.translate_error: Exception | None = None
+        # Agents that run at the same time (LangGraph Send) cannot share one ordered queue: which
+        # thread asks first is not fixed. Each gets its own queue, picked by a phrase of its
+        # system prompt.
+        self.keyed: dict[str, list] = {}
+
+    def script_for(self, key, *turns):
+        """Turns for the chat (or complete() call) whose system prompt contains `key`."""
+        self.keyed.setdefault(key, []).extend(turns)
+        return self
+
+    def queue_for(self, system):
+        return next((q for k, q in self.keyed.items() if k in (system or "")), None)
 
     def complete(self, system, prompt, *, json_schema=None, temperature=0.1, budget_s=30):
         from app.services.rag_index import TRANSLATE_RULES
@@ -278,6 +298,14 @@ class FakeLLM:
                 raise self.translate_error
             self.translated.append(prompt)
             return fake_translate(prompt)
+        own = self.queue_for(system)
+        if own is not None:
+            if not own:
+                raise AssertionError("a writer asked the model more often than the test scripted")
+            item = own.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item.text
         if not self.turns:
             raise AssertionError("the bot asked the model more often than the test scripted")
         item = self.turns.pop(0)
