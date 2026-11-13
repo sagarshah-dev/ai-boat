@@ -301,6 +301,22 @@ fall back to the bot's key only if it is missing; the run summary says which key
 **Cost:** one more model call for a hop (only when an expense search found nothing); a search
 may embed up to 10 late rows first.
 
+## 28. Short-term memory: a sliding window per chat and member
+
+**Chosen:** the last 3 exchanges (the user's message and the bot's final reply) of one person in
+one chat, from the last 30 minutes, kept in `conversation_turns` and sent to the model as earlier
+turns before the new message. Old rows are deleted when a new one is written (no scheduled job).
+Grounding may take the subject (plant, topic) from them, never a number. A settle PIN is never
+stored. Corrections ("na, 150 hata") are a new tool, `edit_last_expense`, shown for ✅; an undo
+chosen by the model is shown for ✅ too (the typed command `undo` stays direct).
+**Why:** live baseline 13-11-2026, 0 of 3 follow-ups understood; one of them ("Na, 150 hata")
+deleted an entry with no question.
+**Considered:** LangGraph's checkpointer with the chat as the thread — the same idea, but the main
+agent is not a graph; rebuilding it for memory alone would be a rewrite. Summary memory and
+token-based trimming — not needed for three short exchanges. Per chat only — in the group,
+Biren's last message would explain Sagar's "e".
+**Cost:** no extra model call; a few hundred tokens per message.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.

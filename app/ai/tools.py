@@ -14,8 +14,9 @@ GET_BALANCES = "get_balances"
 GET_RECENT = "get_recent"
 SEARCH_EXPENSES = "search_expenses"
 DELETE_LAST_EXPENSE = "delete_last_expense"
+EDIT_LAST_EXPENSE = "edit_last_expense"
 
-WRITE_TOOLS = {ADD_EXPENSE, ADD_EXPENSES, DELETE_LAST_EXPENSE}
+WRITE_TOOLS = {ADD_EXPENSE, ADD_EXPENSES, DELETE_LAST_EXPENSE, EDIT_LAST_EXPENSE}
 
 
 def _s(type_: str, description: str = "", **extra) -> dict:
@@ -92,8 +93,21 @@ def expense_tools(payers: list[str]) -> list[ToolSpec]:
         ),
         ToolSpec(
             name=DELETE_LAST_EXPENSE,
-            description="Undo: remove the sender's OWN most recent unsettled expense. Use for "
-                        "'undo', 'delete last entry', 'galti ho gayi'. It can never remove anyone "
-                        "else's entry, so it takes no arguments.",
+            description="Undo: remove the sender's OWN most recent unsettled expense. Use only "
+                        "when the user asks to remove it: 'undo', 'delete last entry', 'kadhi "
+                        "nakh'. NOT for a correction like 'na, 150 hata' — that is "
+                        "edit_last_expense. The user confirms before anything is deleted.",
+        ),
+        ToolSpec(
+            name=EDIT_LAST_EXPENSE,
+            description="Correct the sender's OWN most recent unsettled expense: a new amount "
+                        "and/or item. Use for 'na, 150 hata', 'sorry 150 hata', 'tea nahi coffee "
+                        "hati'. The user confirms before anything changes.",
+            parameters=_s("OBJECT", properties={
+                "amount": _s("NUMBER", "The corrected amount, exactly as written in the latest "
+                                       "message. 0 if the amount is not being changed."),
+                "description": _s("STRING", "The corrected item, only if the user changed it. "
+                                            "Empty otherwise."),
+            }),
         ),
     ]

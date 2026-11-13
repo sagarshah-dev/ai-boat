@@ -27,7 +27,7 @@ from app.core.formatting import entries, fmt_date, inr, parse_date, to_rupees
 from app.core.replies import Buttons, Out
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError, ToolCall
-from app.services import balance, expenses, farm, members, pending
+from app.services import balance, expenses, farm, members, memory, pending
 from app.services.expenses import ExpenseView
 
 log = logging.getLogger(__name__)
@@ -71,6 +71,14 @@ class Context:
     # and its answer ("pan par fodla" + "Mango"). The answer fills a field; it is not the note.
     note_text: str = ""
     unknown_plant: str = ""            # a plant the note names that the plants list does not have
+    # Short-term memory: this person's last exchanges in this chat (role, text), oldest first.
+    # Sent to the model before the new message; also what grounding may use besides the message.
+    recent: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def recent_text(self) -> str:
+        """Earlier words of this conversation (the user's and the replies they saw)."""
+        return "\n".join(t for _, t in self.recent)
 
     def __post_init__(self):
         if not self.people:
@@ -225,6 +233,19 @@ def dropped_proposals_note(found: list[dict]) -> str:
 
 # ── The model loop ──────────────────────────────────────────────────────────────────────────
 
+# Short-term memory (app/services/memory.py): earlier messages explain "e divase", "shu karu?",
+# "na, 150 hata". They never replace a tool: numbers, dates and IDs still come from tools, and a
+# write still needs its check / ✅.
+MEMORY_RULES = (
+    "EARLIER MESSAGES: the chat may start with this person's last few messages and your replies "
+    "(up to 30 minutes old). Use them only to understand what the LATEST message refers to "
+    "('e divase' = the date in your last reply, 'shu karu?' = the problem they just described, "
+    "'na, 150 hata' = a correction of their last expense -> edit_last_expense). Act only on the "
+    "latest message: never redo an action from an earlier message, and still get every number, "
+    "date and ID from a tool. If the latest message is a new topic, ignore the earlier ones. "
+)
+
+
 def system_prompt(ctx: Context) -> str:
     names = ", ".join(m.name for m in ctx.people)
     sender_pays = members.match_name(ctx.people, ctx.sender.name) is not None
@@ -255,7 +276,7 @@ def system_prompt(ctx: Context) -> str:
         "If the date or the time is missing, leave it empty — the system asks. Always call "
         "find_meetings before cancel_meeting or reschedule_meeting; if more than one meeting could "
         "match, ask which one. "
-        + farm_tools.SYSTEM_RULES + farm_salah.RULES +
+        + farm_tools.SYSTEM_RULES + farm_salah.RULES + MEMORY_RULES +
         "BALANCE: if you used get_balances with other tools, never rewrite its numbers. "
         "If a tool returns an error, explain it simply and ask the user what is needed."
     )
@@ -266,6 +287,9 @@ def _run_model(ctx: Context, message: str) -> tuple[list[ToolRun], str, str | No
     done_writes: set[str] = set()
     try:
         chat = ctx.llm.start(system_prompt(ctx), all_tools(ctx), LLM_BUDGET_S)
+        ctx.recent = memory.recent(ctx.session, ctx.chat_id, ctx.sender.id)
+        if ctx.recent:
+            chat.add_history(ctx.recent)
         turn = chat.send_user(message)
         nudged = False
         for round_no in range(1, MAX_ROUNDS + 1):
@@ -416,18 +440,42 @@ def execute_tool(ctx: Context, name: str, args: dict[str, Any], message: str) ->
     if name == tools.SEARCH_EXPENSES:
         return _search(ctx, args, message)
     if name == tools.DELETE_LAST_EXPENSE:
-        if ctx.confirm_writes:
-            target = expenses.newest_own_open(ctx.session, ctx.sender)
-            if target is None:
-                return {"text_reply": f"No recent unsettled entry by {ctx.sender.name} to undo.",
-                        "deleted": None}
-            return {"proposal": proposals.undo_proposal(target)}
-        undone = expenses.undo_last(ctx.session, ctx.sender)
-        if undone is None:
+        # Always shown first (live 13-11-2026: "Na, 150 hata" was read as undo and the entry
+        # was gone with no question). The typed command "undo" stays direct: the user said it.
+        target = expenses.newest_own_open(ctx.session, ctx.sender)
+        if target is None:
             return {"text_reply": f"No recent unsettled entry by {ctx.sender.name} to undo.",
                     "deleted": None}
-        return {"text_reply": undo_text(undone), "deleted": undone.id}
+        return {"proposal": proposals.undo_proposal(target)}
+    if name == tools.EDIT_LAST_EXPENSE:
+        return _edit_last(ctx, args, message)
     return {"error": f"Unknown tool: {name}"}
+
+
+def _edit_last(ctx: Context, args: dict, message: str) -> dict:
+    """A correction of the sender's own last entry, shown for ✅. The new amount must be written
+    in the LATEST message (memory explains what is corrected, never the number)."""
+    target = expenses.newest_own_open(ctx.session, ctx.sender)
+    if target is None:
+        return {"text_reply": f"No recent unsettled entry by {ctx.sender.name} to change."}
+    try:
+        amount = to_rupees(args.get("amount") or 0)
+    except (ValueError, TypeError, ArithmeticError):
+        amount = Decimal(0)
+    if amount > 0 and not guards.amount_in_text(amount, message):
+        return {"error": f"{amount} is not written in the latest message. Nothing was changed; "
+                         "ask the user for the corrected amount."}
+    description = " ".join(str(args.get("description") or "").split())[:80]
+    if description and (guards.not_an_item(description)
+                        or not any(w in message.lower() for w in description.lower().split())):
+        description = ""        # an item the user did not write now is not a correction
+    if amount <= 0 and not description:
+        return {"error": "No new amount or item in the latest message. Nothing was changed; ask "
+                         "what should be corrected."}
+    new_amount = amount if amount > 0 else None
+    if (new_amount is None or new_amount == target.amount) and description in ("", target.description):
+        return {"text_reply": f"#{target.id} is already ₹{inr(target.amount)} — {target.description}."}
+    return {"proposal": proposals.edit_proposal(target, new_amount, description)}
 
 
 def _written_amount(ctx: Context, args: dict, message: str) -> dict | None:

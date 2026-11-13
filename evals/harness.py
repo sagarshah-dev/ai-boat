@@ -75,6 +75,9 @@ class _RecordingChat:
         self.rec.calls += [{"name": c.name, "args": c.args} for c in turn.calls]
         return turn
 
+    def add_history(self, turns):
+        self.chat.add_history(turns)
+
     def send_user(self, text):
         return self._seen(self.chat.send_user(text))
 

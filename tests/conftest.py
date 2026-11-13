@@ -182,6 +182,10 @@ class FakeChat:
         self.tool_results: list[list] = []
         self.media: list[tuple] = []
         self.escalated = 0   # times the agent switched to the stronger fallback model
+        self.history: list[tuple[str, str]] = []   # short-term memory the agent sent first
+
+    def add_history(self, turns):
+        self.history += list(turns)
 
     def escalate(self):
         self.escalated += 1

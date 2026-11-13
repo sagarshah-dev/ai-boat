@@ -58,6 +58,7 @@ class LlmError(Exception):
 
 
 class Chat(Protocol):
+    def add_history(self, turns: list[tuple[str, str]]) -> None: ...
     def send_user(self, text: str) -> Turn: ...
     def send_tool_results(self, results: list[tuple[str, dict]]) -> Turn: ...
     def send_media(self, text: str, data: bytes, mime_type: str) -> Turn: ...
@@ -131,6 +132,13 @@ class GeminiChat:
             response_schema=types.Schema.model_validate(json_schema) if json_schema else None,
         )
         self.model_used: str = models[0]
+
+    def add_history(self, turns: list[tuple[str, str]]) -> None:
+        """Earlier messages of this conversation, before the new one (short-term memory). Roles
+        are 'user' and 'bot'; Gemini calls the bot 'model'. Nothing is sent until send_user."""
+        for role, text in turns:
+            self._contents.append(types.Content(role="model" if role == "bot" else "user",
+                                                parts=[types.Part.from_text(text=text)]))
 
     def send_user(self, text: str) -> Turn:
         self._contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))

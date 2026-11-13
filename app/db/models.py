@@ -256,6 +256,23 @@ class ProcessedUpdate(Base):
         DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class ConversationTurn(Base):
+    """Short-term memory: one message of a chat, by one member (role user) or the bot's reply to
+    them (role bot). Only the last few, for a short time, are kept (app/services/memory.py)."""
+    __tablename__ = "conversation_turns"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'bot')", name="role"),
+        Index("ix_conversation_turns_chat_member_time", "chat_id", "member_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"))
+    role: Mapped[str] = mapped_column(Text)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created()
+
+
 class PendingAction(Base):
     """A question the bot is waiting on (missing amount, yes/no confirm, settle PIN).
     Was an in-memory Map in the old bot; a restart lost it mid-conversation."""

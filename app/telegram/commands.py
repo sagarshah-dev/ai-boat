@@ -26,7 +26,7 @@ from app.core.replies import Document, Out, Reply
 from app.db.models import Member
 from app.integrations.gemini import LLM, LlmError
 from app.telegram import farm_ui
-from app.services import balance, expenses, farm, mail, members, pending, rag_index, reports, settlements
+from app.services import balance, expenses, farm, mail, members, memory, pending, rag_index, reports, settlements
 from app.services.expenses import CATEGORIES
 
 log = logging.getLogger(__name__)
@@ -89,7 +89,27 @@ class Env:
 
 # ── Text ────────────────────────────────────────────────────────────────────────────────────
 
+_SETTLE_WORDS = re.compile(r"^/?settle\b", re.IGNORECASE)
+
+
+def _remember(env: Env, user_text: str, outs: list[Out]) -> None:
+    """Short-term memory: what was said and what the bot answered (app/services/memory.py).
+    Never a settle PIN: the PIN reply and "settle <PIN>" are not stored."""
+    said = "\n".join(o.text for o in outs if isinstance(o, Reply) and o.text)
+    memory.record(env.session, env.chat_id, env.sender.id, user_text, said)
+
+
 def handle_text(env: Env, text: str) -> list[Out]:
+    # exists(), not get(): get() deletes an expired PIN question, and the late PIN would then
+    # be read as a normal message (and reach the model).
+    pin_asked = pending.exists(env.session, env.chat_id, env.sender.id, pending.SETTLE_PIN)
+    outs = _handle_text(env, text)
+    if text.strip() and not pin_asked and not _SETTLE_WORDS.match(text.strip()):
+        _remember(env, text.strip(), outs)
+    return outs
+
+
+def _handle_text(env: Env, text: str) -> list[Out]:
     raw = text.strip()
     if not raw:
         return []
@@ -583,4 +603,6 @@ def handle_voice(env: Env, file_id: str, mime_type: str, caption: str,
     out: list[Out] = [Reply(f"🎤 Heard: \"{transcript}\"")]
     # A typed caption is the user's own words, so it travels with the transcript.
     text = f"{transcript} ({caption})" if caption else transcript
-    return out + _reply(agent.handle(env.ctx(confirm_writes=True, source="voice"), text))
+    answer = _reply(agent.handle(env.ctx(confirm_writes=True, source="voice"), text))
+    _remember(env, text, answer)
+    return out + answer

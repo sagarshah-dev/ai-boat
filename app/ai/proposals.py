@@ -118,7 +118,7 @@ def undo_proposal(view: expenses.ExpenseView) -> dict:
 
 
 def _undo_preview(p: dict) -> str:
-    return (f"🎤 Undo this entry?\n#{p['id']} — ₹{inr(Decimal(p['amount']))} — {p['description']} "
+    return (f"↩️ Delete this entry?\n#{p['id']} — ₹{inr(Decimal(p['amount']))} — {p['description']} "
             f"({fmt_date(date.fromisoformat(p['date']))})\n\nTap ✅ Delete or ❌ Cancel (or reply yes / no).")
 
 
@@ -169,7 +169,35 @@ def _joined_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
     return out
 
 
+# ── Change your own last expense: "Na, 150 hata" ────────────────────────────────────────────
+# Live 13-11-2026: "Na, 150 hata" after a ₹100 tea undid the entry with no question. A
+# correction is an edit, shown before it is made.
+
+def edit_proposal(view: expenses.ExpenseView, amount: Decimal | None, description: str) -> dict:
+    return {"kind": "edit", "id": view.id, "old_amount": str(view.amount),
+            "old_description": view.description,
+            "amount": str(amount if amount is not None else view.amount),
+            "description": description or view.description}
+
+
+def _edit_preview(p: dict) -> str:
+    old = f"₹{inr(Decimal(p['old_amount']))} — {p['old_description']}"
+    new = f"₹{inr(Decimal(p['amount']))} — {p['description']}"
+    return (f"✏️ Change #{p['id']}?\n{old}  →  {new}\n\n"
+            "Tap ✅ Save or ❌ Cancel (or reply yes / no).")
+
+
+def _edit_apply(ctx: "Context", p: dict, pick: int | None) -> list[Out]:
+    v = expenses.edit_own_open(ctx.session, ctx.sender, p["id"], amount=Decimal(p["amount"]),
+                               description=p["description"])
+    if v is None:
+        return [Reply(f"Nothing changed — #{p['id']} was removed or settled meanwhile.")]
+    return [Reply(f"✅ Changed #{v.id}: ₹{inr(v.amount)} for {v.description}, paid by {v.paid_by} "
+                  f"— {fmt_date(v.date)}")]
+
+
 register("expenses", Kind(preview=_expenses_preview, apply=_expenses_apply))
+register("edit", Kind(preview=_edit_preview, apply=_edit_apply))
 register("joined", Kind(preview=_joined_preview, apply=_joined_apply, buttons=_joined_buttons))
 register("undo", Kind(preview=_undo_preview, apply=_undo_apply,
                       buttons=lambda p: yes_no("✅ Delete")))

@@ -137,6 +137,18 @@ def undo_by_id(session: Session, member: Member, expense_id: int) -> ExpenseView
     return view
 
 
+def edit_own_open(session: Session, member: Member, expense_id: int, *, amount: Decimal,
+                  description: str) -> ExpenseView | None:
+    """Change amount / item of one's own unsettled entry, after a confirmed preview. Re-checked
+    here like undo_by_id: it may have been settled or undone since the preview."""
+    if find_own_open(session, member, expense_id) is None:
+        return None
+    e = session.get(Expense, expense_id)
+    e.amount, e.description = amount, description
+    session.flush()
+    return find_own_open(session, member, expense_id)
+
+
 def by_ids(session: Session, ids: list[int]) -> list[ExpenseView]:
     if not ids:
         return []

@@ -221,7 +221,7 @@ def test_voice_undo_is_previewed(bot):
     add_rows(("Sagar", 300, "seed"))
     bot.llm.script(say("undo kar"), call("delete_last_expense"))
     reply = bot.voice(SAGAR)
-    assert "Undo this entry?" in reply and "#1 — ₹300 — seed" in reply
+    assert "Delete this entry?" in reply and "#1 — ₹300 — seed" in reply
     assert len(expenses_in_db()) == 1
     assert bot.tg.sent[-1]["buttons"] == [[("✅ Delete", "yes"), ("❌ Cancel", "no")]]
     bot.send(SAGAR, "yes")
