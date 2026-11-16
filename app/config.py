@@ -5,8 +5,10 @@ time with a clear message instead of failing later on the first Telegram message
 """
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MCP_MIN_PASSWORD = 12
 
 
 class Settings(BaseSettings):
@@ -55,6 +57,28 @@ class Settings(BaseSettings):
     rag_min_score: float = 0.62
     # A voice note at least this long is treated as the farmer's advice, not a quick note.
     knowledge_min_seconds: int = 60
+
+    # MCP server for Claude (app/mcp). Both empty = /mcp is not mounted at all (fail closed).
+    # public_base_url is the service's own https URL: OAuth metadata and token audience are
+    # built from it, and Claude checks they match the URL typed into the connector exactly.
+    public_base_url: str = ""
+    # The one person allowed to sign in (Sagar). Money data, so a short password is refused.
+    mcp_owner_password: str = ""
+
+    @model_validator(mode="after")
+    def _mcp_settings_complete(self) -> "Settings":
+        url, pw = self.public_base_url.strip(), self.mcp_owner_password
+        if url or pw:
+            # OAuth 2.1 allows plain http only for loopback addresses (local runs).
+            if not url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+                raise ValueError("PUBLIC_BASE_URL must be the https:// URL of this service")
+            if len(pw) < MCP_MIN_PASSWORD:
+                raise ValueError(f"MCP_OWNER_PASSWORD must be at least {MCP_MIN_PASSWORD} characters")
+        return self
+
+    @property
+    def mcp_enabled(self) -> bool:
+        return bool(self.public_base_url.strip() and self.mcp_owner_password)
 
     @property
     def recipients(self) -> tuple[str, ...]:
