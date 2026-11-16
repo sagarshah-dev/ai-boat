@@ -8,6 +8,36 @@ It is the second version of a bot the owners use daily. Version 1 grew as a Node
 Python AI service with Google Sheets as the database; this version rebuilds it as one service on a
 real database. The reasons for each choice are in [docs/decisions.md](docs/decisions.md).
 
+[![Tests](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml/badge.svg)](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml)
+
+## At a glance
+
+| | |
+|---|---|
+| **What** | An AI agent in Telegram that records shared expenses, keeps a farm journal and answers questions in Gujarati and English, from text, voice notes and photos |
+| **Users** | Version 1 is used daily by the 3 co-owners. This version is proven on test data and real-model evals before the users move over |
+| **Stack** | Python 3.13, FastAPI, Gemini (function calling, embeddings), PostgreSQL + pgvector (Neon), LangGraph, MCP, Docker, Cloud Run, GitHub Actions |
+| **Quality** | 877 automated tests on real Postgres on every push (also through PgBouncer) · 134 real-model eval cases · release gate: 0 wrong database writes |
+| **Decisions** | 30 written design decisions, each with the reason and the trade-off: [docs/decisions.md](docs/decisions.md) |
+
+## Highlights
+
+- **The model chooses, code decides.** Gemini picks a tool; code checks every amount, payer, date
+  and category before anything is written. Money in replies always comes from a template, never
+  from the model's own words.
+- **Propose, then confirm.** Anything read from a photo, voice note or loose text is shown first and
+  saved only on ✅. Pending proposals live in the database, so a restart loses nothing.
+- **Hybrid RAG over the farm journal.** Keyword and vector search (pgvector) together. Exact
+  questions ("when did we last give humic?") are answered from table rows, not from search.
+- **LangGraph with a human in the loop.** Farm Salah chains journal → dose → amount → approval, and
+  waits up to 24 hours for ✅ with Postgres checkpoints.
+- **Multi-agent review.** A supervisor runs a money agent and a farm agent in parallel for the
+  monthly farm review.
+- **MCP server.** Four read-only tools for Claude, behind an OAuth 2.1 server (DCR + PKCE) built
+  into the app.
+- **Evals that measure outcomes.** Real Gemini through the real webhook on a throwaway database;
+  results are graded in code by the rows written, not by reading the reply.
+
 ## Architecture
 
 ```mermaid
@@ -36,7 +66,9 @@ about Telegram, so another channel (WhatsApp, a web page) can reuse the services
 | Feature 6 | AI evals (real model) + production-like test run | ✅ |
 | Feature 7 | Cloud Run deploy | ✅ (continuous, from `main`) |
 | Feature 8 | 🌱 Farm Salah — LangGraph: plan with approval, journal → expense hand-offs | ✅ |
-| Feature 9 | MCP server for Claude — 4 read-only tools, OAuth 2.1 (DCR + PKCE) | ✅ |
+| Feature 9 | Short-term memory: last 3 exchanges per chat and member, corrections become edits | ✅ |
+| Feature 10 | Farm review — multi-agent: LangGraph supervisor + money and farm helper agents | ✅ |
+| Feature 11 | MCP server for Claude — 4 read-only tools, OAuth 2.1 (DCR + PKCE) | ✅ |
 
 ## Access
 
@@ -137,7 +169,7 @@ sequenceDiagram
 The bot talks to Telegram by **polling** when run locally, so no public URL or tunnel is needed.
 
 ```powershell
-git clone https://github.com/tenalilogical-bit/ai-boat.git
+git clone https://github.com/sagarshah-dev/ai-boat.git
 cd ai-boat
 python -m venv venv
 venv\Scripts\activate
@@ -193,3 +225,11 @@ tests/              pytest, real Postgres
 evals/              real-model evals (chat + farm RAG), run from GitHub Actions
 docs/decisions.md   why things are the way they are
 ```
+
+## How I built this
+
+I built AI BOaT with AI-assisted development (Claude Code). I gathered the requirements from the
+co-owners, chose the architecture, made every product decision (recorded in
+[docs/decisions.md](docs/decisions.md)), reviewed each change, tested it live in Telegram and turned
+every live bug into a test or eval case before the fix. Much of the code was written with Claude
+Code, and every change is gated by the test suite and, for AI behaviour, the real-model evals.
