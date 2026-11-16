@@ -16,6 +16,9 @@ requests==2.34.2
 langgraph==1.2.16
 langgraph-checkpoint==4.3.0
 langgraph-checkpoint-postgres==3.2.0
+# MCP server for Claude (app/mcp): protocol, Streamable HTTP and the OAuth 2.1 routes. Hand-written
+# OAuth is where security bugs live; the official SDK is the one Claude's own tools are tested with.
+mcp==2.3.0
 
 # Test-only
 pytest==9.1.1

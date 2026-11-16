@@ -19,6 +19,7 @@ if TEST_DB == os.environ.get("DATABASE_URL"):
 
 ADMIN_ID = 1001
 SETTLE_PIN = "7777"
+MCP_PASSWORD = "test-owner-password-123"
 
 # Settings are read from the environment; set them before the app is imported.
 os.environ.update({
@@ -31,6 +32,9 @@ os.environ.update({
     # The fake embedder below is cruder than Gemini's, so its similarity scores are lower. The
     # real threshold (0.62) is measured with the real model by the evals, not by these tests.
     "RAG_MIN_SCORE": "0.3",
+    # MCP on in every test, so its routes are proven not to shadow the bot's.
+    "PUBLIC_BASE_URL": "https://testserver",
+    "MCP_OWNER_PASSWORD": MCP_PASSWORD,
 })
 
 from alembic import command  # noqa: E402

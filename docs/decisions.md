@@ -338,9 +338,41 @@ threads; prefetching keeps their tools pure. Same-day expense = link — tea is 
 days too. AI-written reminders — a fixed rule is right every time in code.
 **Cost:** 3–5 model calls per review, in parallel: about the slowest helper plus the writer.
 
+## 30. MCP server: four read-only tools for Claude, behind our own OAuth server
+
+**Chosen:** `/mcp` in the same Cloud Run service, built on the official `mcp` Python SDK (2.3.0),
+Streamable HTTP, stateless, JSON responses. Four tools — `search_farm_notes`,
+`last_farm_activity`, `search_expenses`, `get_balance` — that call the same `services/` as the
+bot; no new business logic. Every tool returns one envelope: `{"ok": true, ...}` or
+`{"ok": false, "error": {"code", "message", "hint"}}` with `isError` set, so the model can fix
+its arguments (INVALID_INPUT) or tell the user it failed (INTERNAL, no internals in the text).
+"Nothing found" is ok with an empty list. The farm tool returns the notes, not an answer: the
+client's model writes the answer, so there is no second Gemini call. Versioned as `ai-boat 1.0.0`;
+a breaking change gets a new tool name.
+Sign-in is OAuth 2.1, with this service as the authorization server: DCR (`/register`), PKCE S256,
+a password page for the one owner (`MCP_OWNER_PASSWORD`), access token 1 hour, refresh token 30
+days, rotated on every use. Only Claude's callback (and Claude Code's loopback) may register.
+Secrets are stored as SHA-256. A spent code or rotated refresh token used again cancels every
+token of that sign-in. Five wrong passwords in 15 minutes lock the page. All of it in Postgres
+(`oauth_clients`, `oauth_tokens`, `oauth_login_failures`).
+**Why:** two of three matching job posts ask for MCP servers ("tool schemas, auth, error contracts,
+versioning"). Claude's custom connector, checked 16-11-2026 in its docs, supports OAuth or no
+auth for a personal account; a fixed API key in a header is a beta for some organisations only.
+No auth on money data is not an option, so OAuth.
+**Considered:** write tools (add expense, settle) — the bot guards them with a preview, ✅ and the
+settle PIN; a chat client has none of that, so read-only by design. A separate MCP service — a
+second deploy and a second copy of the services for no gain. Google as the sign-in (delegated
+OAuth) — more moving parts for one user; a password page is enough and can be swapped later.
+Keeping OAuth state in memory — a Cloud Run restart would sign Claude out mid-day.
+**Found while testing:** the SDK's `TokenError` is a frozen dataclass; raised inside
+`with session_scope()` it turns into `FrozenInstanceError` (a 500). Errors are raised after the
+database block closes; a race test covers it.
+**Cost:** one Gemini embedding call per farm search (the bot's key and quota). Nothing else.
+
 ## Open
 
 - Google Calendar → bot sync: an event moved directly in the calendar is not read back.
 - Meeting reminders (the `reminder_sent` column is ready; the job is not written yet).
+- MCP: a second client (ChatGPT) needs its callback URL added to the redirect allow-list.
 - The similarity threshold (`RAG_MIN_SCORE`, 0.62 from version 1) should be re-checked with
   `evals/run_rag_evals.py` on this deployment.

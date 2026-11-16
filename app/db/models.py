@@ -290,3 +290,53 @@ class PendingAction(Base):
     attempts: Mapped[int] = mapped_column(Integer, server_default="0")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = _created()
+
+
+# ── MCP server sign-in (OAuth 2.1, app/mcp) ─────────────────────────────────────────────────
+# In the database, not in memory: Cloud Run restarts the container at any time, and a restart
+# must not sign Claude out or lose a sign-in that is half done.
+
+OAUTH_KINDS = ("request", "code", "access", "refresh")
+
+
+class OAuthClient(Base):
+    """An app that registered itself (Dynamic Client Registration) — Claude, in practice.
+    `info` is the SDK's OAuthClientInformationFull as JSON, so a new SDK field needs no migration."""
+    __tablename__ = "oauth_clients"
+
+    client_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    info: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created()
+
+
+class OAuthToken(Base):
+    """Every short-lived secret of the sign-in, one row each:
+    request = the login page's ticket, code = authorization code, access / refresh = tokens.
+    Only a SHA-256 of the secret is stored: a leaked database row cannot be used as a token.
+    `family` ties together everything that came from one sign-in, so reusing a spent code or
+    refresh token (a sign of theft) can cancel the whole family at once."""
+    __tablename__ = "oauth_tokens"
+    __table_args__ = (
+        CheckConstraint(_in("kind", OAUTH_KINDS), name="kind"),
+        Index("ix_oauth_tokens_family", "family"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text)
+    client_id: Mapped[str] = mapped_column(ForeignKey("oauth_clients.client_id", ondelete="CASCADE"))
+    family: Mapped[str] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    # A spent code / rotated refresh token is kept (used_at set) until it expires, so a second
+    # use is recognised as reuse instead of looking like an unknown token.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = _created()
+
+
+class OAuthLoginFailure(Base):
+    """One wrong password on the MCP login page. Too many in a short time lock the page."""
+    __tablename__ = "oauth_login_failures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 index=True)

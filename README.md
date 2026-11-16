@@ -36,6 +36,7 @@ about Telegram, so another channel (WhatsApp, a web page) can reuse the services
 | Feature 6 | AI evals (real model) + production-like test run | ✅ |
 | Feature 7 | Cloud Run deploy | ✅ (continuous, from `main`) |
 | Feature 8 | 🌱 Farm Salah — LangGraph: plan with approval, journal → expense hand-offs | ✅ |
+| Feature 9 | MCP server for Claude — 4 read-only tools, OAuth 2.1 (DCR + PKCE) | ✅ |
 
 ## Access
 
@@ -99,6 +100,38 @@ graph TD
 Money is never worded by the AI: every reply carrying an amount comes from a fixed template, and
 an amount is saved only if it is written in the message (`tea by sagar` is asked, not guessed).
 
+## MCP server (use the data from Claude)
+
+`/mcp` exposes four **read-only** tools to Claude or any MCP client: `search_farm_notes`,
+`last_farm_activity`, `search_expenses`, `get_balance`. Writing stays in the bot, behind ✅ and
+the settle PIN. Sign-in is OAuth 2.1; Claude registers itself and the owner types
+`MCP_OWNER_PASSWORD` on the sign-in page once. Off unless both settings are set:
+
+| Variable | Value |
+|---|---|
+| `PUBLIC_BASE_URL` | the service URL, e.g. `https://ai-boat-xxxx.a.run.app` (no `/` at the end) |
+| `MCP_OWNER_PASSWORD` | at least 12 characters, used only on the sign-in page |
+
+Connect: Claude → Settings → Connectors → Add custom connector → name `AI BOaT`, URL
+`<PUBLIC_BASE_URL>/mcp` → Add → Connect → type the password → Allow.
+
+```mermaid
+sequenceDiagram
+    participant C as Claude
+    participant S as AI BOaT (/mcp)
+    participant U as Owner (browser)
+    C->>S: POST /mcp (no token)
+    S-->>C: 401 + where the metadata is
+    C->>S: GET /.well-known/... (metadata)
+    C->>S: POST /register (DCR)
+    C->>U: open /authorize (with PKCE challenge)
+    U->>S: password on /oauth/login
+    S-->>U: redirect to claude.ai with a one-time code
+    C->>S: POST /token (code + PKCE verifier)
+    S-->>C: access token (1 h) + refresh token (30 days)
+    C->>S: POST /mcp (Bearer token) tools/call
+```
+
 ## Run it on your PC (Windows)
 
 The bot talks to Telegram by **polling** when run locally, so no public URL or tunnel is needed.
@@ -152,6 +185,8 @@ app/
   integrations/     gemini.py (retries, fallback, embeddings), email.py, calendar.py
   jobs/             routes.py (POST /jobs/daily), farm_jobs.py (follow-ups, plan reminders,
                     search sync, cleanup of abandoned plans)
+  mcp/              server.py (MCP server, 4 tools, mount), tools.py (input checks, error
+                    contract), auth_provider.py (OAuth 2.1 store), login.py (sign-in page)
 migrations/         Alembic schema versions
 scripts/            dev_polling.py (local), set_webhook.py (after deploy)
 tests/              pytest, real Postgres
