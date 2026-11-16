@@ -319,21 +319,24 @@ Biren's last message would explain Sagar's "e".
 
 ## 29. Farm review: multi-agent (a supervisor and two helper agents)
 
-**Chosen:** `farm_review` is a LangGraph graph. `gather` (code) reads the month's expenses, the
-same days of the month before, and the journal once. `Send` starts a money helper and a farm
-helper at the same time; each is an agent with its own prompt, its own read-only tools over those
-facts, and its own loop (max 4 rounds). A writer joins their notes into at most 3 "salah" lines.
-The numbers on screen are code's; a model line with a number not in the facts, or with
-"owe/owes", is dropped. A failed helper or writer drops only its lines.
+**Chosen:** `farm_review` is a LangGraph graph. `gather` (code) reads the month's expenses and
+journal once and decides what rules can decide: reminders (a result pending 7+ days, a plan saved
+twice) and LINKS (an expense whose item names a treatment's product). `Send` starts a money
+helper and a farm helper at the same time; each is an agent with its own prompt, its own
+read-only tools over those facts, and its own loop (max 4 rounds). A writer adds at most 2 lines;
+it may join money and farm only through a LINK. A model line with a number not in the facts, an
+invented link, or "owe/owes" is dropped. A failed helper or writer drops only its lines.
 **Why:** live baseline 13-11-2026: "Aa mahina nu farm review aapo" searched notes for the word
 "review" and showed no money. One agent picks one tool; a review needs two areas and a join.
+Live 16-11-2026 (first version): an invented link, "+8826%" against a month with no data, a
+November plan in the October review, and a reply too long for a phone. Comparison and % were
+removed; the reply is short.
 **Considered:** one big tool that returns everything to the main agent — works for the numbers,
-but one prompt then has to read money and farm facts together and the main agent's context grows
-with each tool. Helpers that query the database themselves — they run on two threads, and one
-SQLAlchemy session must not be shared across threads; prefetching keeps their tools pure.
-Comparing with the whole previous month — 13 days against 31 always looks like a drop.
-**Cost:** 3–5 model calls per review (two helpers with a tool round each, one writer), in
-parallel, so about the time of the slowest helper plus the writer.
+but one prompt then reads money and farm facts together. Helpers that query the database
+themselves — they run on two threads, and one SQLAlchemy session must not be shared across
+threads; prefetching keeps their tools pure. Same-day expense = link — tea is bought on spray
+days too. AI-written reminders — a fixed rule is right every time in code.
+**Cost:** 3–5 model calls per review, in parallel: about the slowest helper plus the writer.
 
 ## Open
 
