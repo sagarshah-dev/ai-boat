@@ -1,22 +1,24 @@
 """📋 Farm review: a supervisor and two helper agents (multi-agent), built with LangGraph.
 
 Live baseline 13-11-2026: "Aa mahina nu farm review aapo" -> 'No farm note found ... for: review'.
-One agent picks one tool, so a question that needs money AND farm work AND a comparison could
-not be answered at all.
+One agent picks one tool, so a question that needs money AND farm work could not be answered.
 
     gather (code) ──Send──► money helper (agent) ──┐
                   └─Send──► farm helper  (agent) ──┴► write (AI) ──► answer (code)
 
-- gather: code reads the database ONCE, in this thread: the period's expenses (and the previous
-  month's) and journal rows. These are the FACTS.
-- helpers: each is an agent — its own prompt, its own read-only tools, its own tool loop — that
-  decides what to look at and returns at most two short notes. `Send` runs both at the same time
-  (LangGraph runs them in a thread pool). Their tools read only the facts dict, never the
-  database: one SQLAlchemy session must not be used by two threads.
-- write: one more model call turns the helpers' notes into at most three "salah" lines.
-- answer: the numbers on screen are code's (from the facts). Every model line must use only
-  numbers that are in the facts, or it is dropped. A failed model call drops its lines, never the
-  review.
+- gather: code reads the database ONCE, in this thread. These are the FACTS, and they include
+  what code can decide alone: reminders (a result pending 7+ days, a plan saved twice) and
+  LINKS (an expense whose item names a treatment's product: "Copper" ₹500 ↔ J-3 copper).
+- helpers: each is an agent — its own prompt, its own read-only tools, its own loop. `Send` runs
+  both at the same time. Their tools read only the facts dict, never the database: one
+  SQLAlchemy session must not be used by two threads.
+- write: at most 2 AI lines. A line may join money and farm only through a LINK code found.
+- answer: everything on screen except those AI lines is code's.
+
+Live 16-11-2026 (first version): the writer joined "₹1,290 agri medicine" to J-2 — both real,
+the link invented; "+8826%" against a month with no data yet; an October review showed a
+November plan; lines repeated numbers ("Sagar spent 2605 out of 3535"). The reply was also too
+long. Now: no % or comparison, reminders by code, joins only through LINKS, a short reply.
 
 Nothing is written: no checkpointer, no ✅, no pending row.
 """
@@ -36,6 +38,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Send
 
 from app.core.formatting import entries, fmt_date, inr
+from app.core.text import norm, words
 from app.integrations.gemini import LlmError, ToolSpec
 from app.ai.farm_salah import outcome_of
 from app.services import expenses, farm
@@ -50,12 +53,14 @@ PERIODS = ("this_month", "last_month")
 HELPER_ROUNDS = 4                 # a helper that keeps calling tools is stopped here
 HELPER_BUDGET_S = 40
 MAX_NOTES = 2                     # lines per helper
-MAX_SALAH = 3
+MAX_AI_LINES = 2                  # the writer's lines, after code's reminders
+MAX_REMINDERS = 3
+RESULT_DUE_DAYS = 7               # same as the 7-day follow-up of a treatment
 
 SPEC = ToolSpec(
     NAME,
-    "A REVIEW / SUMMARY of a whole month that combines money AND farm work: totals, comparison "
-    "with the month before, what worked, what is still pending. Use for 'aa mahina nu farm review "
+    "A REVIEW / SUMMARY of a whole month that combines money AND farm work: totals, what "
+    "worked, what is still pending. Use for 'aa mahina nu farm review "
     "aapo', 'gaya mahina no saar', 'monthly summary of the farm'. NOT for one lookup, the balance "
     "('hisab'), or a list of expenses.",
     {"type": "OBJECT", "properties": {
@@ -72,95 +77,109 @@ RULES = (
 
 # ── The facts (code, one thread, one read of the database) ──────────────────────────────────
 
-def month_range(today: date, period: str) -> tuple[date, date, date, date]:
-    """(start, end, compare-from, compare-to).
-
-    The comparison covers the SAME days of the month before: on the 13th, 1–13 November is
-    compared with 1–13 October, not with all of October (13 days against 31 would always look
-    like a big drop). For a whole month the comparison is the whole month before."""
+def month_range(today: date, period: str) -> tuple[date, date]:
     first = today.replace(day=1)
     if period == "last_month":
         end = first - timedelta(days=1)
-        start = end.replace(day=1)
-    else:
-        start, end = first, today
-    p_last = start - timedelta(days=1)
-    p_start = p_last.replace(day=1)
-    if period == "last_month":
-        return start, end, p_start, p_last
-    return start, end, p_start, min(p_last, p_start + (end - start))
+        return end.replace(day=1), end
+    return first, today
 
 
 def _money(rows) -> dict:
-    total = sum((v.amount for v in rows), Decimal(0))
     by_cat: dict[str, Decimal] = {}
     by_payer: dict[str, Decimal] = {}
     for v in rows:
         by_cat[v.category] = by_cat.get(v.category, Decimal(0)) + v.amount
         by_payer[v.paid_by] = by_payer.get(v.paid_by, Decimal(0)) + v.amount
-    share = {c: round(a * 100 / total) for c, a in by_cat.items()} if total else {}
-    order = sorted(by_cat, key=lambda c: -by_cat[c])
-    return {"total": int(total), "count": len(rows),
-            "by_category": {c: int(by_cat[c]) for c in order},
-            "share_pct": {c: share[c] for c in order},
+    return {"total": int(sum((v.amount for v in rows), Decimal(0))), "count": len(rows),
+            "by_category": {c: int(a) for c, a in sorted(by_cat.items(), key=lambda x: -x[1])},
             "by_payer": {p: int(a) for p, a in sorted(by_payer.items(), key=lambda x: -x[1])},
-            "biggest": [{"id": v.id, "amount": int(v.amount), "item": v.description,
-                         "date": fmt_date(v.date)}
+            "biggest": [{"id": v.id, "amount": int(v.amount), "item": v.description}
                         for v in sorted(rows, key=lambda v: (-v.amount, -v.id))[:3]]}
+
+
+def _item(e) -> dict:
+    return {"id": f"J-{e.id}", "product": e.product.strip() or farm.ACTIVITY_LABEL.get(
+        e.activity, e.activity), "date": fmt_date(e.entry_date)}
 
 
 def _farm(rows, planned) -> dict:
     work: dict[str, int] = {}
     buckets: dict[str, list] = {"worked": [], "partly": [], "did_not_work": [],
-                                "waiting_for_result": []}
+                                "result_pending": []}
     for e in rows:
         if e.activity == "planned":
             continue
         label = farm.ACTIVITY_LABEL.get(e.activity, e.activity)
         work[label] = work.get(label, 0) + 1
         if e.activity in farm.TREATMENTS:
-            item = {"id": f"J-{e.id}", "product": e.product.strip() or label,
-                    "problem": e.problem.strip(), "date": fmt_date(e.entry_date)}
             outcome = outcome_of(e.result)
-            if not e.result.strip():
-                buckets["waiting_for_result"].append(item)
-            elif outcome == "worked":
-                buckets["worked"].append(item)
-            elif outcome == "not_worked":
-                buckets["did_not_work"].append(item)
-            else:                       # "partly", or a result written in the owner's own words
-                buckets["partly"].append(item)
+            key = ("result_pending" if not e.result.strip() else "worked" if outcome == "worked"
+                   else "did_not_work" if outcome == "not_worked"
+                   else "partly")          # "partly", or a result in the owner's own words
+            buckets[key].append(_item(e))
     work = dict(sorted(work.items(), key=lambda kv: (-kv[1], kv[0])))     # most done first
     return {"notes": sum(work.values()), "work": work, **buckets,
-            "planned_not_done": [{"id": f"J-{e.id}", "product": e.product.strip() or "plan",
-                                  "date": fmt_date(e.entry_date)} for e in planned]}
+            "planned_not_done": [_item(e) for e in planned]}
 
 
-def _pct(now: int, before: int) -> int | None:
-    """No percentage against zero: "+∞%" says nothing."""
-    return round((now - before) * 100 / before) if before else None
+def _key_words(text: str) -> set[str]:
+    """Words that can name a product: 'copper oxychloride' -> {copper, oxychloride}."""
+    return {w for w in words(text) if len(w) >= 4}
 
 
-def _sum(rows) -> int:
-    return int(sum((v.amount for v in rows), Decimal(0)))
+def links(spent, treatments) -> list[dict]:
+    """An expense and a treatment are linked when the expense's item names the product.
+
+    Code decides links; the writer may only use these. Live 16-11-2026 it joined '₹1,290 agri
+    medicine' to J-2 by itself: both real, the link invented. A shared date is NOT a link —
+    tea is bought on spray days too."""
+    out = []
+    for v in spent:
+        names = _key_words(v.description)
+        for e in treatments:
+            if e.product.strip() and names & _key_words(e.product):
+                out.append({"expense": f"#{v.id}", "amount": int(v.amount), "item": v.description,
+                            "note": f"J-{e.id}", "product": e.product.strip(),
+                            "result": outcome_of(e.result) or ("pending" if not e.result.strip()
+                                                               else "partly")})
+    return out
+
+
+def reminders(today: date, open_treatments, planned) -> list[str]:
+    """What the owners should do, decided by code: rules, so they are right every time."""
+    out = []
+    due = sorted((e for e in open_treatments
+                  if (today - e.entry_date).days >= RESULT_DUE_DAYS), key=lambda e: e.entry_date)
+    for e in due:
+        out.append(f"Check the result of {_item(e)['product']} (J-{e.id}): done "
+                   f"{(today - e.entry_date).days} days ago, no result yet.")
+    same: dict[str, list] = {}
+    for e in planned:
+        same.setdefault(norm(e.product) or "plan", []).append(e)
+    for group in same.values():
+        if len(group) > 1:
+            group = sorted(group, key=lambda e: e.id)
+            ids = ", ".join(f"J-{e.id}" for e in group)
+            out.append(f"{_item(group[0])['product']} is planned {len(group)} times ({ids}): "
+                       "is one extra?")
+    return out[:MAX_REMINDERS]
 
 
 def gather_facts(session, today: date, period: str) -> dict:
-    start, end, c_start, c_end = month_range(today, period)
-    now = expenses.search(session, date_from=start, date_to=end)
-    before = expenses.search(session, date_from=c_start, date_to=c_end)
+    start, end = month_range(today, period)
+    spent = expenses.search(session, date_from=start, date_to=end)
     notes = farm.query(session, date_from=start, date_to=end)
-    planned = farm.query(session, activity="planned")
-    month_before = before if period == "last_month" else expenses.search(
-        session, date_from=c_start, date_to=start - timedelta(days=1))
-    return {"period": f"{fmt_date(start)} to {fmt_date(end)}",
-            "month": start.strftime("%B %Y"), "previous_month": c_start.strftime("%B %Y"),
-            "money": _money(now),
-            "compared_with": {"period": f"{fmt_date(c_start)} to {fmt_date(c_end)}",
-                              "total": _sum(before), "count": len(before),
-                              "change_pct": _pct(_sum(now), _sum(before))},
-            "previous_month_total": _sum(month_before),
-            "farm": _farm(notes, planned)}
+    # A plan stays pending until it is done, whatever month it was saved in — but a review of
+    # October does not show a plan saved in November.
+    planned = farm.query(session, activity="planned", date_to=end)
+    treatments = [e for e in farm.query(session, date_to=end) if e.activity in farm.TREATMENTS]
+    open_ones = [e for e in treatments if not e.result.strip()
+                 and e.entry_date >= today - timedelta(days=90)]
+    return {"period": f"{fmt_date(start)} to {fmt_date(end)}", "month": start.strftime("%B %Y"),
+            "money": _money(spent), "farm": _farm(notes, planned),
+            "reminders": reminders(today, open_ones, planned),
+            "links": links(spent, treatments)}
 
 
 # ── Grounding: a model line may only use numbers that are in the facts ──────────────────────
@@ -181,11 +200,26 @@ def _numbers(text: str) -> set[str]:
 _BANNED = re.compile(r"\bowe[sd]?\b|\bowing\b", re.I)    # house rule: "pending" / "gets back"
 
 
+_NOTE_ID = re.compile(r"\bJ-?\s?(\d+)\b", re.I)
+_RUPEES = re.compile(r"(?:₹|rs\.?\s?|inr\s?)(\d[\d,]*)", re.I)
+
+
+def _linked(line: str, facts: dict) -> bool:
+    """A line that names a note AND an amount joins money to farm work: only a LINK code found
+    may do that."""
+    notes = {f"J-{n}" for n in _NOTE_ID.findall(line)}
+    amounts = {int(a.replace(",", "")) for a in _RUPEES.findall(line)}
+    if not (notes and amounts):
+        return True
+    return any(k["note"] in notes and k["amount"] in amounts for k in facts.get("links", []))
+
+
 def grounded(lines: list[str], facts: dict) -> list[str]:
     allowed = _numbers(json.dumps(facts, default=str))
-    kept = [ln for ln in lines if _numbers(ln) <= allowed and not _BANNED.search(ln)]
+    kept = [ln for ln in lines if _numbers(ln) <= allowed and not _BANNED.search(ln)
+            and _linked(ln, facts)]
     if len(kept) < len(lines):
-        log.info("review line dropped: number not in the facts, or a banned word",
+        log.info("review line dropped: unknown number, invented link or banned word",
                  extra={"fields": {"dropped": len(lines) - len(kept)}})
     return kept
 
@@ -198,20 +232,17 @@ def _lines(text: str, limit: int) -> list[str]:
 # ── The helpers: two agents, each with its own prompt and read-only tools ───────────────────
 
 _NO_ARGS = {"type": "OBJECT", "properties": {}}
-_PERIOD_ARG = {"type": "OBJECT", "properties": {"which": {
-    "type": "STRING", "enum": ["this", "previous"], "description": "this period or the month before"}}}
 
 HELPERS: dict[str, dict[str, Any]] = {
     "money": {
         "system": (
             "You are the MONEY helper of a monthly farm review for three co-owners. Use your tools "
             "to look at the month's expenses, then reply with at most 2 short lines the owners "
-            "would want to know (a big change, where most money went). Copy every number from a "
-            "tool result; never compute a new number. Plain text, one fact per line, English. "
-            "Never use the words owe / owes."),
+            "would want to know (where most money went, a single big expense). Copy every number "
+            "from a tool result; never compute a new number or a percentage. Write amounts as "
+            "₹1,785. Plain text, one fact per line, English. Never use the words owe / owes."),
         "tools": [
-            ToolSpec("money_totals", "Total, count, per category (with % share) and per payer.",
-                     _PERIOD_ARG),
+            ToolSpec("money_totals", "Total, count, per category and per payer.", _NO_ARGS),
             ToolSpec("biggest_expenses", "The three biggest expenses of the period.", _NO_ARGS),
         ],
     },
@@ -219,13 +250,12 @@ HELPERS: dict[str, dict[str, Any]] = {
         "system": (
             "You are the FARM helper of a monthly farm review. Use your tools to look at the "
             "month's farm work, then reply with at most 2 short lines the owners would want to "
-            "know (what worked, what is still pending). Copy every number and note id (J-…) from "
-            "a tool result. Never suggest a medicine or a dose. Plain text, one fact per line, "
-            "English."),
+            "know (what worked, what did not). Copy every number and note id (J-…) from a tool "
+            "result. Never suggest a medicine or a dose. Plain text, one fact per line, English."),
         "tools": [
             ToolSpec("farm_work", "How many notes of each kind of work this period.", _NO_ARGS),
             ToolSpec("treatment_results", "Treatments this period: worked, partly, did not "
-                                          "work, waiting for a result.", _NO_ARGS),
+                                          "work, result pending.", _NO_ARGS),
             ToolSpec("plans_not_done", "Saved spray plans that are not done yet.", _NO_ARGS),
         ],
     },
@@ -237,16 +267,14 @@ def helper_tool(facts: dict, name: str, args: dict) -> dict:
     thread while the other helper runs in another."""
     m, f = facts["money"], facts["farm"]
     if name == "money_totals":
-        if str(args.get("which") or "this") == "previous":
-            return {**facts["compared_with"], "whole_previous_month": facts["previous_month_total"]}
         return {"period": facts["period"], **{k: m[k] for k in
-                                              ("total", "count", "by_category", "share_pct", "by_payer")}}
+                                              ("total", "count", "by_category", "by_payer")}}
     if name == "biggest_expenses":
         return {"biggest": m["biggest"]}
     if name == "farm_work":
         return {"period": facts["period"], "notes": f["notes"], "work": f["work"]}
     if name == "treatment_results":
-        return {k: f[k] for k in ("worked", "partly", "did_not_work", "waiting_for_result")}
+        return {k: f[k] for k in ("worked", "partly", "did_not_work", "result_pending")}
     if name == "plans_not_done":
         return {"planned_not_done": f["planned_not_done"]}
     return {"error": f"Unknown tool {name}"}
@@ -298,7 +326,7 @@ def fan_out(state: Review) -> list[Send] | str:
     """Only helpers with something to look at are started: no data, no model call."""
     f = state["facts"]
     sends = []
-    if f["money"]["count"] or f["compared_with"]["count"]:
+    if f["money"]["count"]:
         sends.append(Send("helper", {"who": "money", "facts": f}))
     if f["farm"]["notes"] or f["farm"]["planned_not_done"]:
         sends.append(Send("helper", {"who": "farm", "facts": f}))
@@ -316,25 +344,31 @@ def helper(state: HelperInput, runtime: Runtime[Deps]) -> dict:
 
 
 WRITER = (
-    "You write the 'salah' (advice) part of a monthly farm review for three co-owners. You get "
-    "FACTS (all numbers) and NOTES from a money helper and a farm helper. Write at most 3 short "
-    "lines, each starting with '- '. Join money and farm where it helps (the cost of work that "
-    "worked, money spent on something still pending). Use only numbers that appear in FACTS. "
-    "Never suggest a medicine or a dose. Never use the words owe / owes. English.")
+    "You write at most 2 short advice lines for a monthly farm review for three co-owners, each "
+    "starting with '- '. You get NOTES from a money helper and a farm helper, LINKS (an expense "
+    "and the treatment it paid for, found by code) and REMINDERS (already shown; do not repeat "
+    "them). Join money and farm ONLY through a LINK (e.g. '₹500 on Copper (#57) paid for J-3 "
+    "copper oxychloride, which worked'). Do not repeat a total or a category amount; say "
+    "something the owners can act on or would not see at a glance. If there is nothing useful, "
+    "write nothing. Write amounts as ₹1,785. Never suggest a medicine or a dose. Never use the "
+    "words owe / owes. English.")
 
 
 def write(state: Review, runtime: Runtime[Deps]) -> dict:
     notes = [ln for n in state.get("notes", []) for ln in n["lines"]]
     if not notes:
         return {"salah": [], "path": ["write (nothing to join)"]}
-    prompt = (f"FACTS:\n{json.dumps(state['facts'], ensure_ascii=False, default=str)}\n\n"
-              "NOTES:\n" + "\n".join(f"- {ln}" for ln in notes))
+    f = state["facts"]
+    prompt = ("NOTES:\n" + "\n".join(f"- {ln}" for ln in notes)
+              + f"\n\nLINKS:\n{json.dumps(f['links'], ensure_ascii=False)}"
+              + "\n\nREMINDERS:\n" + "\n".join(f"- {r}" for r in f["reminders"]))
     try:
         text = runtime.context.ctx.llm.complete(WRITER, prompt, temperature=0.2, budget_s=30)
     except LlmError as err:
         log.warning("review writer failed", extra={"fields": {"kind": err.kind}})
         return {"salah": [], "path": ["write (failed)"]}
-    return {"salah": grounded(_lines(text, MAX_SALAH), state["facts"]), "path": ["write"]}
+    # Checked first, then capped: a dropped line must not use up a place.
+    return {"salah": grounded(_lines(text, 6), f)[:MAX_AI_LINES], "path": ["write"]}
 
 
 def answer(state: Review) -> dict:
@@ -360,59 +394,39 @@ GRAPH = build().compile()               # no checkpointer: nothing pauses, nothi
 
 # ── The reply (code) ─────────────────────────────────────────────────────────────────────────
 
-def _change(pct: int | None) -> str:
-    return "" if pct is None else f" ({'+' if pct >= 0 else ''}{pct}%)"
-
-
 def _items(rows: list[dict]) -> str:
     return ", ".join(f"{t['product']} ({t['id']})" for t in rows)
 
 
-def _money_lines(f: dict) -> list[str]:
-    m, c = f["money"], f["compared_with"]
-    if not (m["count"] or c["count"]):
-        return ["💰 Money: no expenses in this period or the one before."]
-    out = [f"💰 Money: ₹{inr(m['total'])} in {entries(m['count'])}",
-           f"• Same days of {f['previous_month']} ({c['period']}): ₹{inr(c['total'])}"
-           f"{_change(c['change_pct'])}"]
-    if f["previous_month_total"] != c["total"]:
-        out.append(f"• Whole {f['previous_month']}: ₹{inr(f['previous_month_total'])}")
-    if m["count"]:
-        out.append("• By category: " + " · ".join(
-            f"{k} ₹{inr(a)} ({m['share_pct'][k]}%)" for k, a in m["by_category"].items()))
-        out.append("• Paid by: " + " · ".join(f"{p} ₹{inr(a)}" for p, a in m["by_payer"].items()))
-        out.append("• Biggest: " + " · ".join(
-            f"#{b['id']} ₹{inr(b['amount'])} {b['item']}" for b in m["biggest"]))
-    return out
-
-
-def _farm_lines(w: dict) -> list[str]:
-    if not (w["notes"] or w["planned_not_done"]):
-        return ["🌱 Farm: no farm notes in this period."]
-    out = ["🌱 Farm work: " + (" · ".join(f"{k} {n}" for k, n in w["work"].items())
-                              or "no notes in this period")]
-    for key, label in (("worked", "✅ Worked"), ("partly", "➖ Partly"),
-                       ("did_not_work", "❌ Did not work"),
-                       ("waiting_for_result", "⏳ Waiting for result"),
-                       ("planned_not_done", "📝 Planned, not done")):
-        if w[key]:
-            out.append(f"• {label}: {_items(w[key])}")
-    return out
-
-
 def review_text(state: Review) -> str:
+    """Short on purpose (live 16-11-2026: the first version was too long to read on a phone)."""
     f = state["facts"]
-    out = [f"📋 Farm review — {f['month']} ({f['period']})", "", *_money_lines(f), "",
-           *_farm_lines(f["farm"])]
-    if state.get("salah"):
-        out += ["", "💡 Salah:", *[f"- {s}" for s in state["salah"]]]
+    m, w = f["money"], f["farm"]
+    start, _, end = f["period"].partition(" to ")
+    out = [f"📋 {f['month']} review ({start[:5]} to {end[:5]})", ""]
+    if m["count"]:
+        out += [f"💰 ₹{inr(m['total'])} · {entries(m['count'])}",
+                " · ".join(f"{k} ₹{inr(a)}" for k, a in m["by_category"].items()),
+                "Paid: " + " · ".join(f"{p} ₹{inr(a)}" for p, a in m["by_payer"].items())]
+    else:
+        out.append("💰 No expenses.")
+    out.append("")
+    farm_lines = [" · ".join(f"{k} {n}" for k, n in w["work"].items())] if w["work"] else []
+    for key, label in (("worked", "✅"), ("partly", "➖"), ("did_not_work", "❌"),
+                       ("result_pending", "⏳ Result pending:"),
+                       ("planned_not_done", "📝 Plan not done:")):
+        if w[key]:
+            farm_lines.append(f"{label} {_items(w[key])}")
+    out += [f"🌱 {farm_lines[0]}", *farm_lines[1:]] if farm_lines else ["🌱 No farm notes."]
+    salah = f["reminders"] + state.get("salah", [])
+    if salah:
+        out += ["", "💡 Salah", *[f"- {s}" for s in salah]]
     if state.get("failed"):
         out += ["", "ℹ️ The AI part could not run just now; the numbers above are complete."]
-    helpers = [p for p in state.get("path", []) if "helper" in p]
+    helpers = [p.split()[0] for p in state.get("path", []) if p.endswith("helper")]
     if helpers:
-        out += ["", f"🔎 How: LangGraph supervisor → {' + '.join(helpers)} (AI agents with "
-                    "read-only tools, in parallel) → writer (AI). Every number is from the "
-                    "database; an AI line with any other number is dropped."]
+        out += ["", f"🔎 {' + '.join(helpers)} helper{'s' if len(helpers) > 1 else ''} "
+                    "(AI, in parallel) · numbers from the database"]
     return "\n".join(out)
 
 
@@ -422,8 +436,8 @@ def run(ctx: "Context", args: dict) -> dict:
     period = period if period in PERIODS else "this_month"
     state = GRAPH.invoke({"period": period}, context=Deps(ctx))
     f = state["facts"]
-    if not (f["money"]["count"] or f["compared_with"]["count"] or f["farm"]["notes"]
-            or f["farm"]["planned_not_done"]):
+    if not (f["money"]["count"] or f["farm"]["notes"] or f["farm"]["planned_not_done"]
+            or f["reminders"]):
         return {"text_reply": f"📋 Nothing to review for {f['month']}: no expenses and no farm "
                               "notes yet."}
     return {"text_reply": review_text(state), "review": {"path": state.get("path", [])}}
