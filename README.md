@@ -1,11 +1,11 @@
 # AI BOaT
 
 A Telegram assistant for a shared farmhouse: expense splitting between co-owners, a farm journal
-with AI search (RAG), meetings, and reports — one Python service on Google Cloud Run with
+for a multi-fruit orchard with AI search (RAG), meetings, and reports — one Python service on Google Cloud Run with
 Postgres (Neon).
 
-It is the second version of a bot the owners use daily. Version 1 grew as a Node gateway plus a
-Python AI service with Google Sheets as the database; this version rebuilds it as one service on a
+It is the second version of a bot the owners use daily. It started as an n8n + Gemini prototype;
+version 1 grew as a Node gateway plus a Python AI service with Google Sheets as the database; this version rebuilds it as one service on a
 real database. The reasons for each choice are in [docs/decisions.md](docs/decisions.md).
 
 [![Tests](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml/badge.svg)](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml)
@@ -38,7 +38,7 @@ real database. The reasons for each choice are in [docs/decisions.md](docs/decis
 
 ## Highlights
 
-- **The model chooses, code decides.** Gemini picks a tool; code checks every amount, payer, date
+- **The model chooses, code decides.** Gemini picks one of 19 tools; code checks every amount, payer, date
   and category before anything is written. Money in replies always comes from a template, never
   from the model's own words.
 - **Propose, then confirm.** Anything read from a photo, voice note or loose text is shown first and
@@ -47,9 +47,9 @@ real database. The reasons for each choice are in [docs/decisions.md](docs/decis
   questions ("when did we last give humic?") are answered from table rows, not from search.
 - **LangGraph with a human in the loop.** Farm Salah chains journal → dose → amount → approval, and
   waits up to 24 hours for ✅ with Postgres checkpoints.
-- **Multi-agent review.** For the monthly farm review, a LangGraph supervisor (plain code, not a
-  model) sends the work to a money agent and a farm agent in parallel, then a writer combines
-  their notes. Every number in the reply comes from the database.
+- **Multi-agent review.** For the monthly farm review, an orchestrator-worker graph in LangGraph
+  (the orchestrator is plain code, not a model) runs a money agent and a farm agent in parallel,
+  then a writer combines their notes. Every number in the reply comes from the database.
 - **MCP server.** Four read-only tools for Claude, behind an OAuth 2.1 server (DCR + PKCE) built
   into the app.
 - **Evals that measure outcomes.** Real Gemini through the real webhook on a throwaway database;
@@ -89,7 +89,7 @@ reuses the same services, and another channel (WhatsApp, a web page) could too.
 | Feature 7 | Cloud Run deploy | ✅ (continuous, from `main`) |
 | Feature 8 | 🌱 Farm Salah — LangGraph: plan with approval, journal → expense hand-offs | ✅ |
 | Feature 9 | Short-term memory: last 3 exchanges per chat and member, corrections become edits | ✅ |
-| Feature 10 | Farm review — multi-agent: LangGraph supervisor + money and farm helper agents | ✅ |
+| Feature 10 | Farm review — multi-agent: LangGraph orchestrator-worker, money and farm agents in parallel | ✅ |
 | Feature 11 | MCP server for Claude — 4 read-only tools, OAuth 2.1 (DCR + PKCE) | ✅ |
 
 ## Access
