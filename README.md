@@ -47,8 +47,9 @@ real database. The reasons for each choice are in [docs/decisions.md](docs/decis
   questions ("when did we last give humic?") are answered from table rows, not from search.
 - **LangGraph with a human in the loop.** Farm Salah chains journal → dose → amount → approval, and
   waits up to 24 hours for ✅ with Postgres checkpoints.
-- **Multi-agent review.** A supervisor runs a money agent and a farm agent in parallel for the
-  monthly farm review.
+- **Multi-agent review.** For the monthly farm review, a LangGraph supervisor (plain code, not a
+  model) sends the work to a money agent and a farm agent in parallel, then a writer combines
+  their notes. Every number in the reply comes from the database.
 - **MCP server.** Four read-only tools for Claude, behind an OAuth 2.1 server (DCR + PKCE) built
   into the app.
 - **Evals that measure outcomes.** Real Gemini through the real webhook on a throwaway database;
@@ -59,15 +60,20 @@ real database. The reasons for each choice are in [docs/decisions.md](docs/decis
 ```mermaid
 flowchart LR
     TG[Telegram] -->|webhook + secret header| W[telegram/]
+    CL[Claude] -->|OAuth 2.1| M[mcp/ — 4 read-only tools]
+    SCH[Cloud Scheduler] -->|POST /jobs/daily| J[jobs/]
     W --> AI[ai/ — Gemini function calling + guards]
     W --> S[services/ — business rules]
     AI --> S
+    M --> S
+    J --> S
     S --> DB[(Postgres + pgvector<br/>Neon)]
     S --> X[integrations/ — Gemini, Calendar, email]
 ```
 
-Layers only call downwards. `telegram/` never touches the database, and `services/` knows nothing
-about Telegram, so another channel (WhatsApp, a web page) can reuse the services unchanged.
+Layers only call downwards. `telegram/` keeps only a duplicate-update check in the database; every
+business rule lives in `services/`, which knows nothing about Telegram. That is how the MCP server
+reuses the same services, and another channel (WhatsApp, a web page) could too.
 
 ## Status
 
