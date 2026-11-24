@@ -10,6 +10,22 @@ real database. The reasons for each choice are in [docs/decisions.md](docs/decis
 
 [![Tests](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml/badge.svg)](https://github.com/sagarshah-dev/ai-boat/actions/workflows/tests.yml)
 
+## Demo
+
+<p align="center">
+  <img src="docs/images/ai-boat-demo.gif" alt="AI BOaT demo: voice note, safe edit, RAG search, multi-agent review" width="360">
+</p>
+
+![Architecture](docs/images/architecture.png)
+
+| Farm Salah (LangGraph): pauses for approval before saving | MCP server: Claude reads the data (OAuth, read-only) |
+|---|---|
+| <img src="docs/images/farm-salah.png" width="360"> | <img src="docs/images/mcp-claude.png" width="360"> |
+
+| Hybrid RAG search with cited notes | Multi-agent monthly review |
+|---|---|
+| <img src="docs/images/rag-hybrid-search.png" width="360"> | <img src="docs/images/multi-agent-review.png" width="360"> |
+
 ## At a glance
 
 | | |
