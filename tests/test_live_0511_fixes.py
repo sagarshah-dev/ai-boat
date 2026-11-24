@@ -130,8 +130,10 @@ def test_variety_rows_do_not_change_the_mango_count(bot):
 
 def test_live_question_is_filtered_to_kesar_and_skips_dadam(bot, live_notes):
     j3, dadam, chiku = (f"J-{live_notes[i]}" for i in (0, 1, 4))
+    # No date in the scripted answer: the notes are seeded relative to today, so a fixed "15-10"
+    # was only "grounded" while some note's date fell in October (failed from 24-11-2026).
     bot.llm.script(call("search_farm_notes", query=LIVE_Q),
-                   rag_answer("15-10 e copper oxychloride chhantyu hatu, kaam karyu.", [j3]))
+                   rag_answer("Copper oxychloride chhantyu hatu, kaam karyu.", [j3]))
     r = bot.send(SAGAR, LIVE_Q)
     assert "filter: Mango, Kesar" in r
     prompt = [p for sys, p in bot.llm.completions if sys == rag.ANSWER_RULES][-1]
